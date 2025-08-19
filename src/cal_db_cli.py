@@ -1,5 +1,5 @@
 import argparse
-from cal_db_util import CalibrationDatabase, CalibrationParameter
+from .cal_db_util import CalibrationDatabase, CalibrationParameter
 
 def main():
     parser = argparse.ArgumentParser(description='Calibration Database CLI')
