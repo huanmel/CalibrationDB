@@ -1,9 +1,11 @@
 import argparse
 from .cal_db_util import CalibrationDatabase, CalibrationParameter
+import glob
+import os
 
 def main():
     parser = argparse.ArgumentParser(description='Calibration Database CLI')
-    parser.add_argument('--db', default='data/calibration.db', help='Database file path')
+    parser.add_argument('--db', help='Database file path')
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     # Add command
@@ -35,16 +37,29 @@ def main():
 
     # Load command
     load_parser = subparsers.add_parser('load', help='Load parameters from file')
-    load_parser.add_argument('--file', required=True, help='CSV or JSON file path')
+    load_parser.add_argument('--file',  help='CSV or JSON file path, if not provided, defaults to db file name with .csv extension')
     load_parser.add_argument('--prefix', default='cal-', help='UID prefix')
     load_parser.add_argument('--type', choices=['csv', 'json'], default='csv', help='File type')
 
     # Export command
     export_parser = subparsers.add_parser('export', help='Export database to CSV')
-    export_parser.add_argument('--file', default='data/calibration_export.csv', help='Output CSV file path')
+    export_parser.add_argument('--file', help='Output CSV file path')
 
     args = parser.parse_args()
+    if not args.db:
+        print("Warning: Database file path is required. The first one would be used")
+        db_files = glob.glob('*.db')
+        if db_files:
+            args.db = db_files[0]
+            print(f"db file found: {args.db}")
+        else:
+            print("Warning: no files found in data directory'")
+            return
+        
     db = CalibrationDatabase(args.db)
+    if args.file is None:
+        args.file = os.path.splitext(args.db)[0] + '.csv'
+        print(f"csv not provided, default file used: {args.file}")
 
     if args.command == 'add':
         param = CalibrationParameter(
@@ -80,6 +95,7 @@ def main():
             db.load_from_json(args.file, args.prefix)
 
     elif args.command == 'export':
+
         db.export_to_csv(args.file)
 
     db.close()
