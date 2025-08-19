@@ -23,7 +23,6 @@ def main():
 
     # Update command
     update_parser = subparsers.add_parser('update', help='Update an existing parameter')
-    update_parser.add_argument('--prefix', default='cal-', help='UID prefix')
     update_parser.add_argument('--name', required=True, help='Parameter name')
     update_parser.add_argument('--value', default=None, help='Parameter value')
     update_parser.add_argument('--mod-comment', default=None, help='Modification comment')

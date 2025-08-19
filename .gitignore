@@ -1,1 +1,26 @@
-src/__pycache__/cal_db_util.cpython-313.pyc
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Database and data files
+data/calibration.db
+data/*.cal
+data/*.csv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db

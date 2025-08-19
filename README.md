@@ -28,7 +28,7 @@ CalibrationDB is a Python package for managing calibration parameters in a SQLit
 ### Install via pip
 1. **Clone the Repository** (optional, for development):
    ```bash
-   git clone https://github.com/huanmel/CalibrationDB.git
+   git clone https://github.com/yourusername/CalibrationDB.git
    cd CalibrationDB
    pip install .
    ```
@@ -36,7 +36,7 @@ CalibrationDB is a Python package for managing calibration parameters in a SQLit
 
 2. **Install from GitHub** (direct installation):
    ```bash
-   pip install git+https://github.com/huanmel/CalibrationDB.git
+   pip install git+https://github.com/yourusername/CalibrationDB.git
    ```
 
 3. **Create Data Directory**:
@@ -46,9 +46,9 @@ CalibrationDB is a Python package for managing calibration parameters in a SQLit
    ```
 
 ### Verify Installation
-After installation, the `calibrationdb` CLI command should be available:
+After installation, the `caldb` CLI command should be available:
 ```bash
-calibrationdb --help
+caldb --help
 ```
 
 ## Usage
@@ -80,7 +80,7 @@ param_update = CalibrationParameter(
     value='[10 90]',
     mod_comment='Updated value for testing'
 )
-db.update_parameter(param_update)
+db.update_parameter('cal-', param_update)
 
 # Rename a parameter
 db.rename_parameter('ParamNew1', 'CalNewName1', 'Updated name for clarity')
@@ -92,32 +92,32 @@ db.close()
 ```
 
 ### Command-Line Interface
-The `calibrationdb` command provides a CLI for managing the database. Run with `--help` for details:
+The `caldb` command provides a CLI for managing the database. Run with `--help` for details:
 
 ```bash
-calibrationdb --help
+caldb --help
 ```
 
 #### CLI Commands
 - **Add a parameter**:
   ```bash
-  calibrationdb --db data/calibration.db add --prefix cal- --name ParamNew1 --value "[0 80]" --datatype uint8 --unit per --size 2 --description "param description" --aliases "ParamOld1;ParamOld2" --mod-comment "Initial addition"
+  caldb --db data/calibration.db add --prefix cal- --name ParamNew1 --value "[0 80]" --datatype uint8 --unit per --size 2 --description "param description" --aliases "ParamOld1;ParamOld2" --mod-comment "Initial addition"
   ```
 - **Update a parameter** (updates only value):
   ```bash
-  calibrationdb --db data/calibration.db update  --name ParamNew1 --value "[10 90]" --mod-comment "Updated value for testing"
+  caldb --db data/calibration.db update --prefix cal- --name ParamNew1 --value "[10 90]" --mod-comment "Updated value for testing"
   ```
 - **Rename a parameter**:
   ```bash
-  calibrationdb --db data/calibration.db rename --identifier ParamNew1 --new-name CalNewName1 --mod-comment "Updated name for clarity"
+  caldb --db data/calibration.db rename --identifier ParamNew1 --new-name CalNewName1 --mod-comment "Updated name for clarity"
   ```
 - **Load from CSV**:
   ```bash
-  calibrationdb --db data/calibration.db load --file data/example_cals.cal --type csv
+  caldb --db data/calibration.db load --file data/example_cals.cal --type csv
   ```
 - **Export to CSV**:
   ```bash
-  calibrationdb --db data/calibration.db export --file data/calibration_export.csv
+  caldb --db data/calibration.db export --file data/calibration_export.csv
   ```
 
 ### Input File Formats
@@ -141,7 +141,7 @@ calibrationdb --help
 ## Project Structure
 ```
 CalibrationDB/
-├── calibrationdb/
+├── src/calibrationdb/
 │   ├── __init__.py
 │   ├── cal_db_util.py      # Core database logic
 │   ├── cal_db_cli.py       # Command-line interface
