@@ -1,0 +1,32 @@
+MID	UID	Name	Value	COMMENT	DataType	Unit	Size	Min	Max	Description	ALIASES	ModifiedDateTime	ModificationComment
+a9ac2e24566d7852b2ff8060ce4e5534	cal-											2025-08-19T11:52:25.771746	
+4044b65d452d5583eeac625ab8342d9e	cal-newParam1	newParam2	[0 80]		uint8	%	2	0.0	100.0	description text abcsd	oldName1;OldName2;newParam1;newParam2;newParam1;newParam2;newParam1;newParam2;newParam1;newParam2;newParam1	2025-08-19T12:03:27.907430	
+5078b58151acb3b34cb6d6720f6705cb	cal-CalName1	CalName1	[0 80]		uint8	per	2	0.0	100.0			2025-08-19T12:03:27.601473	
+dd473e51c6ff76dfb6ca7b112871878d	cal-CalName2	CalName2	[50 100]		uint8	per	2	0.0	100.0			2025-08-19T12:03:27.618794	
+4edc1628423b8870ec41e9c98260317e	cal-CalName3	CalName3	1		boolean		1					2025-08-19T12:03:27.625700	
+b80cdadd35012a0406e57fee336a3b72	cal-CalName4	CalName4	4		single	degC	1	0.0				2025-08-19T12:03:27.632412	
+a642b5759210f0fe065b950cb47b46ce	cal-CalName5	CalName5	2		single	degC	1	0.0				2025-08-19T12:03:27.639211	
+2111c8cb92d43ae6949bb633b7003680	cal-CalName6	CalName6	[5 30]		uint8	degC	2	0.0				2025-08-19T12:03:27.646103	
+37352750cd85b91d935e472fba99c7b6	cal-CalName7	CalName7	[20 60 50 60 60]		uint8	per	5	0.0	100.0			2025-08-19T12:03:27.652857	
+967af1a027b2a45fc357768626143162	cal-CalName8	CalName8	[0 0 0]		boolean		3					2025-08-19T12:03:27.659801	
+ebdf1cd056c20a97661fc4dc48a10ab9	cal-CalName9	CalName9	[0 1 0]		boolean		3					2025-08-19T12:03:27.666607	
+86fc503eb47b9d7565f414dfbc0dd72d	cal-CalName10	CalName10	[0 100 0]		uint8	per	3	0.0	100.0			2025-08-19T12:03:27.673428	
+7385eea71c673d7ed55ea098a269ae33	cal-CalName11	CalName11	[0 100 0]		uint8	per	3	0.0	100.0			2025-08-19T12:03:27.680179	
+7613ca73c2f27e55b128a73e0fac5008	cal-CalName12	CalName12	20		uint8	per	1	0.0	100.0			2025-08-19T12:03:27.686882	
+b4f537e939557b59169350e3e2be38be	cal-CalName13	CalName13	TRUE		boolean		1					2025-08-19T12:03:27.693585	
+6f4947502ae9b6bd507fc385c66448e4	cal-CalName14	CalName14	0.300000012		single		1					2025-08-19T12:03:27.700259	
+7d52d144b93b3d671e43df5141429df5	cal-CalName15	CalName15	0.100000001		single		1					2025-08-19T12:03:27.706924	
+5b0dbbc3f5e3fae82149fb359967a1c1	cal-CalName16	CalName16	FALSE		boolean		1					2025-08-19T12:03:27.713721	
+62484cad496601986c64cb45b47fd0f8	cal-CalName17	CalName17	50		uint8	per	1	0.0	100.0			2025-08-19T12:03:27.720721	
+86ab5882618a0d40c9f183231b32338b	cal-CalName18	CalName18	[800 1000 1200]		uint16	kPa	3					2025-08-19T12:03:27.742313	
+c9841b3443c24ee55309ba5a690a9783	cal-CalName19	CalName19	30		uint8	per	1	0.0	100.0			2025-08-19T12:03:27.771374	
+58267c43ef2fbc925e020bff6764ddef	cal-CalName20	CalName20	[800 1200 1500]		uint16	kPa	3					2025-08-19T12:03:27.790458	
+24c39bf4c20d78050ce7da829668e843	cal-CalName21	CalName21	[0 100 100]		uint8	per	3					2025-08-19T12:03:27.808516	
+28d4e550220b7a2710922e8e8c6849d5	cal-CalName22	CalName22	[100 2500]		uint16	kPa	2					2025-08-19T12:03:27.826138	
+b24af6f792543cfcea8a46454fa17039	cal-CalName23	CalName23	[100 1000]		uint16	kPa	2					2025-08-19T12:03:27.843892	
+52843fe521c3be762687546973692497	cal-CalName24	CalName24	100		uint16	kPa	1					2025-08-19T12:03:27.858107	
+a7caf891b0a590e4a679d648f4314348	cal-CalName25	CalName25	10		uint8	sec	1	0.0				2025-08-19T12:03:27.869456	
+8bac4604d060d97302e1425a2cb000a0	cal-CalName26	CalName26	5		uint8	sec	1	0.0				2025-08-19T12:03:27.876196	
+bc15b2263d423c033e62abda1e5957ec	cal-CalName27	CalName27	1		uint8	sec	1	0.0				2025-08-19T12:03:27.882733	
+554a7a738611072fcbe41a9cef703227	cal-CalName28	CalName28	10		uint8	sec	1					2025-08-19T12:03:27.889388	
+098fcffbf812c2a93f4212176e9156c2	cal-TmsBtmsCmprCmdVect	TmsBtmsAcCmdVect	[10 90]								TmsBtmsAcCmdVect;TmsBtmsAcCmdVect1;TmsBtmsCmprCmdVect	2025-08-19T12:15:05.167993	Updated value for testing
