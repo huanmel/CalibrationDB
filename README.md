@@ -228,9 +228,10 @@ caldb changes                  # last 10 (default)
 caldb changes -n 25            # last 25
 caldb changes -n 0             # all
 caldb changes -t update        # filter: add | update | delete
+caldb changes -c               # compact: one line per change
 ```
 
-Output:
+Detailed output:
 ```
 5 change(s) (last 10):
 
@@ -240,6 +241,13 @@ Output:
            value:   100  ->  90
   2026-06-08 14:10:55  ADD     PmpSpdMin  [initial import v0]
            value:   500
+```
+
+Compact output (`-c`):
+```
+2026-06-08 14:10:56  UPDATE  TempCtlSetPnt  22.5 -> 24.0  [sprint 5 tuning]
+2026-06-08 14:10:56  UPDATE  FanSpdReqMax  100 -> 90  [sprint 5 tuning]
+2026-06-08 14:10:55  ADD     PmpSpdMin  500  [initial import v0]
 ```
 
 ---

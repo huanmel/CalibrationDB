@@ -461,16 +461,18 @@ def log(ctx, name, limit):
 @click.option('--type', '-t', 'change_type',
               type=click.Choice(['add', 'update', 'delete'], case_sensitive=False),
               default=None, help='Filter by change type')
+@click.option('--compact', '-c', is_flag=True, help='One line per change')
 @click.pass_context
-def changes(ctx, count, change_type):
+def changes(ctx, count, change_type, compact):
     """Show recent changes across all parameters.
 
     \b
     Examples:
-      caldb -d cal.db changes          # last 10
-      caldb -d cal.db changes -n 25    # last 25
-      caldb -d cal.db changes -n 0     # all
-      caldb -d cal.db changes -t update  # only value changes
+      caldb changes              # last 10
+      caldb changes -n 25        # last 25
+      caldb changes -n 0         # all
+      caldb changes -t update    # only value changes
+      caldb changes -c           # compact, one line per change
     """
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -483,6 +485,20 @@ def changes(ctx, count, change_type):
 
     if not entries:
         click.echo("No changes recorded yet.")
+        return
+
+    if compact:
+        for e in entries:
+            ts = e['ChangeDateTime'][:19].replace('T', ' ')
+            ctype = e['ChangeType'].upper()
+            sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
+            if ctype == 'UPDATE':
+                detail = f"  {e['OldValue']} -> {e['NewValue']}"
+            elif ctype == 'ADD':
+                detail = f"  {e['NewValue']}"
+            else:
+                detail = ''
+            click.echo(f"{ts}  {ctype:6s}  {e['Name']}{detail}{sc}")
         return
 
     label = f"last {count}" if count else "all"
