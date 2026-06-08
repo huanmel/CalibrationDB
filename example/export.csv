@@ -1,0 +1,13 @@
+MID,UID,Name,Value,COMMENT,DataType,Unit,Size,Min,Max,Description,ALIASES,ModifiedDateTime,ModificationComment,PreviousValues,Deleted,Who,Users,Source
+0d6c57e0cdc496a17386475bd6cc4118,CAL-FanSpdReqMax,FanSpdReqMax,90,,uint8,per,1,0.0,100.0,Maximum fan speed request,,2026-06-08T14:10:56.179356,cold weather tuning,100,0,ivan,,App/FanCtl
+3ab3eee4023ebc6e67ea8b7976f9f056,CAL-FanSpdReqMin,FanSpdReqMin,20,,uint8,per,1,0.0,100.0,Minimum fan speed request,,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/FanCtl
+a0f375ce8d6b7df9f5feae74690b82df,CAL-FanSpdMapX,FanSpdMapX,0 20 40 60 80 100,,uint8,per,6,0.0,100.0,Fan speed map X axis (temp input),,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/FanCtl
+9de8f397468eb69c8de25d7086490b6c,CAL-FanSpdMapY,FanSpdMapY,10 20 40 70 90 100,,uint8,per,6,0.0,100.0,Fan speed map Y axis (cmd output),,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/FanCtl
+c59e7f336e7961568a6ff0473c186bd0,CAL-PmpSpdMax,PmpSpdMax,3000,,uint16,rpm,1,0.0,5000.0,Maximum pump speed,,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/PmpCtl
+1ee014be52e4fc3c19f7575915f99e01,CAL-PmpSpdMin,PmpSpdMin,600,,uint16,rpm,1,0.0,5000.0,Minimum pump speed,,2026-06-08T14:10:56.886268,raised idle speed to avoid stall | Value: 500 -> 600,500,0,ivan,,App/PmpCtl
+005000fde1eb0f39e134fd9714fed1cf,CAL-TempCtlSetPnt,TempCtlSetPnt,24.0,,single,degC,1,-10.0,50.0,Cabin temperature set point,,2026-06-08T14:10:56.180358,cold weather tuning,22.5,0,ivan,,App/ClimCtl
+9068f9c51de6f359b37b1cc028dd9087,CAL-TempCtlHyst,TempCtlHyst,1.0,,single,degC,1,0.0,5.0,Temperature control hysteresis,,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/ClimCtl
+566b9d21769257dac7598738d06c5b1e,CAL-TempCtlPID_P,TempCtlPID_P,0.8,,single,,1,0.0,,PID proportional gain,,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/ClimCtl
+ed7173b0b40f448d897a114e2d843725,CAL-TempCtlPID_I,TempCtlPID_I,0.05,,single,,1,0.0,,PID integral gain,,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/ClimCtl
+fd0171d1f4f5a2b54d7df9277208da8d,CAL-FaultTout,FaultTout,5,,uint8,sec,1,1.0,60.0,Fault detection timeout,,2026-06-08T14:10:55.599077,initial import,,0,ivan,,App/FltMng
+e2419809e2db666687a5667b31951cb8,CAL-FanSpdRateLim,FanSpdRateLim,10,,uint8,per/s,1,,,,,2026-06-08T14:10:56.663531,rate limiter added in sprint 5,,0,,,
