@@ -113,6 +113,22 @@ def _resolve_pair(db, csv_file):
     raise click.UsageError("No .db file found. Provide --db <path>.")
 
 
+def _warn_if_unsynced(db_path):
+    """Print a warning if the CSV associated with db_path has changed since last sync."""
+    csv_path = os.path.splitext(db_path)[0] + '.csv'
+    if not os.path.exists(csv_path):
+        return
+    db = CalibrationDatabase(db_path)
+    in_sync, last_sync_time = db.get_sync_status(csv_path)
+    db.close()
+    if in_sync is False:
+        ts = last_sync_time[:19].replace('T', ' ') if last_sync_time else 'never'
+        click.secho(
+            f"Warning: CSV has changed since last sync ({ts}). Run 'caldb sync' first.",
+            fg='yellow', err=True,
+        )
+
+
 def _print_sync_report(added, changed, deleted, dry_run=False):
     tag = '[DRY RUN] ' if dry_run else ''
     total = len(added) + len(changed) + len(deleted)
@@ -159,6 +175,7 @@ def add(ctx, name, value, comment, datatype, unit, size, min_val, max_val,
         description, aliases, prefix, mod_comment):
     """Add a new parameter."""
     db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     param = CalibrationParameter(
         name=name, value=value, comment=comment, datatype=datatype,
@@ -177,6 +194,7 @@ def add(ctx, name, value, comment, datatype, unit, size, min_val, max_val,
 def update(ctx, name, value, mod_comment):
     """Update the value of an existing parameter."""
     db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     db.update_parameter(CalibrationParameter(name=name, value=value, mod_comment=mod_comment))
     db.close()
@@ -190,6 +208,7 @@ def update(ctx, name, value, mod_comment):
 def rename(ctx, identifier, new_name, mod_comment):
     """Rename a parameter (old name moves to aliases)."""
     db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     db.rename_parameter(identifier, new_name, mod_comment)
     db.close()
@@ -202,6 +221,7 @@ def rename(ctx, identifier, new_name, mod_comment):
 def delete(ctx, name, comment):
     """Soft-delete a parameter (kept in history)."""
     db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     db.soft_delete(name, comment)
     db.close()
@@ -362,12 +382,57 @@ def export(ctx, file):
 
 
 @cli.command()
+@click.option('--name', '-n', default=None,
+              help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.')
+@click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
+@click.pass_context
+def show(ctx, name, compact):
+    """Show current value and metadata for one or more parameters."""
+    db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    rows = db.get_parameters(name)
+    db.close()
+
+    if not rows:
+        msg = f"No parameter found matching '{name}'." if name else "No parameters in DB."
+        click.echo(msg)
+        return
+
+    if compact:
+        for r in rows:
+            click.echo(f"{r['Name']}={r['Value']}")
+        return
+
+    for r in rows:
+        click.echo(f"{r['Name']}")
+        click.echo(f"  value:    {r['Value']}")
+        parts = []
+        if r.get('DataType'): parts.append(r['DataType'])
+        if r.get('Unit'):     parts.append(r['Unit'])
+        if r.get('Size'):     parts.append(f"size={r['Size']}")
+        if parts:
+            click.echo(f"  type:     {', '.join(parts)}")
+        if r.get('Min') is not None or r.get('Max') is not None:
+            click.echo(f"  range:    {r['Min']} .. {r['Max']}")
+        if r.get('Description'):
+            click.echo(f"  desc:     {r['Description']}")
+        if r.get('COMMENT'):
+            click.echo(f"  comment:  {r['COMMENT']}")
+        if r.get('Who') or r.get('Source'):
+            who_src = '  /  '.join(x for x in [r.get('Who'), r.get('Source')] if x)
+            click.echo(f"  who/src:  {who_src}")
+        click.echo()
+
+
+@cli.command()
 @click.option('--name', '-n', required=True, help='Parameter name')
 @click.option('--limit', '-l', default=20, show_default=True, help='Max entries to show')
 @click.pass_context
 def log(ctx, name, limit):
     """Show change history for a parameter."""
     db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     entries = db.get_parameter_log(name, limit=limit)
     db.close()
@@ -408,6 +473,7 @@ def changes(ctx, count, change_type):
       caldb -d cal.db changes -t update  # only value changes
     """
     db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     entries = db.get_recent_changes(limit=count)
     db.close()

@@ -37,6 +37,7 @@ parameter individually — who changed what value, when, and why.
   the working directory, no path flags are needed
 - **CLI with short flags** — `-n`, `-f`, `-c`, `-p`, … for quick use in a terminal
 - **Soft delete** — removed parameters stay in history
+- **Stale-DB warning** — any command that reads or edits the DB checks whether the CSV has changed since the last sync and warns if it has
 - **No server, no dependencies** beyond `click` — single SQLite file alongside your CSV
 
 ## Installation
@@ -188,6 +189,35 @@ For each change:
 | `s`      | skip — do not apply this change                   |
 | `q`      | stop reviewing, apply everything confirmed so far |
 | `a`      | abort — apply nothing                             |
+
+---
+
+### `show` — current value and metadata
+
+```bash
+caldb show                        # all parameters (detailed)
+caldb show -n TempCtlSetPnt       # one parameter
+caldb show -n "FanSpd*"           # glob pattern
+caldb show -n "FanSpd*" -c        # compact: one line per parameter
+```
+
+Detailed output:
+```
+TempCtlSetPnt
+  value:    22.5
+  type:     single, degC, size=1
+  range:    -10.0 .. 50.0
+  desc:     Cabin temperature set point
+  comment:  cold weather target
+  who/src:  ivan  /  App/ClimCtl
+```
+
+Compact output (`-c`):
+```
+FanSpdMapX=0 20 40 60 80 100
+FanSpdReqMax=100
+FanSpdReqMin=20
+```
 
 ---
 

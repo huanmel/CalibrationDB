@@ -135,6 +135,12 @@ class CalibrationDatabase:
                 SyncComment    TEXT
             )
         ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS _caldb_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -152,6 +158,30 @@ class CalibrationDatabase:
         ''', (name, change_type, old_value, new_value,
               old_comment, new_comment,
               datetime.now().isoformat(), sync_comment))
+
+    def get_parameters(self, pattern=None):
+        """Return a list of active parameter row dicts.
+
+        pattern  None  -> all parameters
+                 str   -> exact name match, or glob-style wildcard (* -> SQL %)
+        """
+        cur = self.conn.cursor()
+        base = '''
+            SELECT MID, UID, Name, Value, COMMENT, DataType, Unit, Size,
+                   Min, Max, Description, ALIASES, ModifiedDateTime,
+                   ModificationComment, Who, Users, Source
+            FROM calibration
+            WHERE (Deleted = 0 OR Deleted IS NULL)
+        '''
+        if pattern is None:
+            cur.execute(base + ' ORDER BY Name')
+        elif '*' in pattern or '?' in pattern:
+            sql_pattern = pattern.replace('*', '%').replace('?', '_')
+            cur.execute(base + ' AND Name LIKE ? ORDER BY Name', (sql_pattern,))
+        else:
+            cur.execute(base + ' AND Name = ?', (pattern,))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
     def _get_all_active(self):
         """Return {name: row_dict} for all non-deleted parameters."""
@@ -458,7 +488,55 @@ class CalibrationDatabase:
         if dry_run:
             return added, changed, deleted
         self.apply_changes(diff, prefix=prefix, sync_comment=sync_comment)
+        self.store_csv_hash(csv_file)
         return added, changed, deleted
+
+    @staticmethod
+    def _csv_hash(csv_path):
+        h = hashlib.sha256()
+        with open(csv_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def store_csv_hash(self, csv_path):
+        """Store a SHA-256 fingerprint of csv_path so sync state can be checked later."""
+        digest = self._csv_hash(csv_path)
+        cur = self.conn.cursor()
+        for key, val in [
+            ('csv_hash',      digest),
+            ('csv_path',      str(csv_path)),
+            ('csv_sync_time', datetime.now().isoformat()),
+        ]:
+            cur.execute(
+                'INSERT OR REPLACE INTO _caldb_meta (key, value) VALUES (?, ?)',
+                (key, val),
+            )
+        self.conn.commit()
+
+    def get_sync_status(self, csv_path):
+        """Compare csv_path's current content against the stored hash.
+
+        Returns (in_sync, last_sync_time):
+          in_sync        True  = matches last sync
+                         False = CSV has changed since last sync
+                         None  = no sync recorded yet, or CSV not found
+          last_sync_time ISO string of last sync, or None if never synced
+        """
+        cur = self.conn.cursor()
+        cur.execute("SELECT value FROM _caldb_meta WHERE key = 'csv_hash'")
+        row = cur.fetchone()
+        if not row:
+            return None, None
+        stored_hash = row[0]
+        cur.execute("SELECT value FROM _caldb_meta WHERE key = 'csv_sync_time'")
+        time_row = cur.fetchone()
+        last_sync_time = time_row[0] if time_row else None
+        try:
+            current_hash = self._csv_hash(csv_path)
+        except OSError:
+            return None, last_sync_time
+        return current_hash == stored_hash, last_sync_time
 
     # ------------------------------------------------------------------
     # History log
