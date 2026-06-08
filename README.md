@@ -1,170 +1,370 @@
 # CalibrationDB
 
-CalibrationDB is a Python package for managing calibration parameters in a SQLite database, with support for importing/exporting data in CSV and JSON formats. It provides a robust way to store, update, and track calibration parameters with unique identifiers (MID and UID), aliases, and modification history. The package includes a programmatic API (`cal_db_util.py`) and a command-line interface (`cal_db_cli.py`).
+A lightweight tool for tracking per-parameter changes to calibration CSV files.
+
+**What is a calibration file?**
+A calibration file is a table of named parameters — constants and lookup tables
+that control the runtime behaviour of an embedded system (thresholds, PID gains,
+speed maps, timeouts, …). Each parameter has a value, a data type, units, limits,
+and a description. Engineers iterate on these values throughout development and
+tuning, so knowing *what changed, when, and why* is as important as the values
+themselves.
+
+**Why CSV + SQLite?**
+CSV is the natural format for calibration data: it opens in Excel or any text
+editor, it is human-readable, and it integrates cleanly with git for whole-file
+versioning. A SQLite database sits alongside the CSV as a tracking layer — it
+records every per-parameter change with timestamps, old/new values, and comments
+without touching the CSV itself. JSON import is also supported when data comes
+from automated tooling, but CSV remains the primary editing surface.
+
+You keep editing your calibration CSV in Excel or a text editor as usual.
+After each editing session, run `caldb sync` — it diffs the CSV against the
+database, records what changed (added, modified, deleted parameters), and
+stores the history with timestamps and optional comments.
+
+Git tracks the file as a whole; CalibrationDB tracks each calibration
+parameter individually — who changed what value, when, and why.
 
 ## Features
 
-- **SQLite Database Storage**: Stores calibration parameters in a SQLite database with fields for MID, UID, Name, Value, Comment, DataType, Unit, Size, Min, Max, Description, Aliases, ModifiedDateTime, ModificationComment, and PreviousValues.
-- **Unique Identifiers**:
-  - **MID**: A unique MD5 hash generated from the UID.
-  - **UID**: A combination of a user-defined prefix and the parameter name.
-- **Add Parameters**: Add new parameters with validation to prevent duplicates in Name or Aliases.
-- **Update Parameters**: Update only the value of an existing parameter, preserving other attributes, with automatic tracking of previous values and change comments.
-- **Rename Parameters**: Rename parameters while preserving MID and UID, storing the old name in Aliases.
-- **Modification Tracking**: Automatically records modification timestamps and generates comments for changes (e.g., "Value: old -> new" or "Name: old -> new").
-- **Previous Values**: Stores a history of previous values for each parameter in a semicolon-separated list.
-- **Import/Export**:
-  - Import parameters from CSV or JSON files.
-  - Export the entire database to CSV with all fields.
-- **Command-Line Interface**: A CLI (`cal_db_cli.py`) for adding, updating, renaming, loading, and exporting parameters.
-- **Flexible Data Handling**: Supports optional fields (e.g., Min, Max can be NULL) and handles missing values gracefully.
+- **Two CSV formats** — auto-detected:
+  - *Multi-column*: `Value_1 … Value_10` columns (one column per array element)
+  - *Single-column*: `Value` with bracket notation `[0 80]` or `[0, 1, 2]`
+- **Per-parameter change history** — every add, update, and delete is logged
+  with timestamp, old/new value, and an optional comment
+- **Smart auto-detection** — if a `.db` and `.csv` share the same base name in
+  the working directory, no path flags are needed
+- **CLI with short flags** — `-n`, `-f`, `-c`, `-p`, … for quick use in a terminal
+- **Soft delete** — removed parameters stay in history
+- **No server, no dependencies** beyond `click` — single SQLite file alongside your CSV
 
 ## Installation
 
-### Prerequisites
-- Python 3.6 or higher
-- No external dependencies required (uses standard library modules: `sqlite3`, `hashlib`, `json`, `csv`, `os`, `datetime`, `argparse`, `collections`)
-
-### Install via pip
-1. **Clone the Repository** (optional, for development):
-   ```bash
-   git clone https://github.com/yourusername/CalibrationDB.git
-   cd CalibrationDB
-   pip install .
-   ```
-   This installs the package locally.
-
-2. **Install from GitHub** (direct installation):
-   ```bash
-   pip install git+https://github.com/yourusername/CalibrationDB.git
-   ```
-
-3. **Create Data Directory**:
-   The package uses a `data` directory for the database and input/output files. Create it in your working directory:
-   ```bash
-   mkdir data
-   ```
-
-### Verify Installation
-After installation, the `caldb` CLI command should be available:
 ```bash
-caldb --help
+git clone https://github.com/yourusername/calibrationdb.git
+cd calibrationdb
+pip install .
 ```
 
-## Usage
+Or directly from GitHub:
 
-### Programmatic Usage
-The `calibrationdb` package provides the `CalibrationDatabase` class for programmatic interaction. Example:
+```bash
+pip install git+https://github.com/yourusername/calibrationdb.git
+```
+
+Requires Python ≥ 3.6 and `click ≥ 8.0`.
+
+## Typical workflow
+
+```
+project/
+  PROJECT_A_cal.csv   ← edit this in Excel or a text editor
+  PROJECT_A_cal.db    ← created by caldb on first sync
+```
+
+**First sync — import the whole file:**
+```bash
+cd project/
+caldb sync -c "initial import v0"
+```
+
+**After editing the CSV — record what changed:**
+```bash
+caldb sync -c "sprint 5 cold-weather tuning"
+```
+
+There are two complementary ways to annotate changes:
+
+| Level         | Where                       | How                                             | Scope                                                              |
+|---------------|-----------------------------|-------------------------------------------------|--------------------------------------------------------------------|
+| Per-parameter | `COMMENT` column in the CSV | Edit the cell next to the parameter you changed | One row — why *this* value changed, its source, ticket number, etc.|
+| Session       | `-c` flag on `sync`         | `caldb sync -c "sprint 5 tuning"`               | All changes in this sync — a batch label like a commit message     |
+
+Both are stored in history. If you only ever use one, use the CSV `COMMENT` column — it travels with the file and gives the most useful context when reviewing old changes later.
+
+**See what changed across all parameters:**
+```bash
+caldb changes          # last 10 changes
+caldb changes -n 25    # last 25
+caldb changes -n 0     # everything
+caldb changes -t update   # only value changes
+```
+
+**See full history for one parameter:**
+```bash
+caldb log -n TempCtlSetPnt
+```
+
+Because the CSV and DB share the same base name, no `--db` or `--file` flags
+are needed in any of the commands above.
+
+## CSV formats
+
+The tool auto-detects the format from the column headers.
+
+### Multi-column
+
+Arrays are spread across separate columns `Value_1` … `Value_10` (up to 10
+elements). This is a common layout when calibration tables are exported from
+tooling that keeps each element in its own column for easy spreadsheet editing:
+
+```
+Name,Value_1,Value_2,...,Value_10,COMMENT,DataType,Unit,Size,Min,Max,Description,Who,Users,Source
+FanSpdReqMax,100,,,,,,,,,,,uint8,per,1,0,100,Maximum fan speed,ivan,,App/FanCtl
+FanSpdMapX,0,20,40,60,80,100,,,,,,uint8,per,6,0,100,Speed map X axis,ivan,,App/FanCtl
+```
+
+### Single-column
+
+Arrays are written as a bracketed list in a single `Value` column:
+
+```
+Name,Value,COMMENT,DataType,Unit,Size,Min,Max,Description,ALIASES
+FanSpdReqMax,100,,uint8,per,1,0,100,Maximum fan speed,
+FanSpdMapX,[0 20 40 60 80 100],,uint8,per,6,0,100,Speed map X axis,
+```
+
+Both `[0 80]` and `[0, 1, 2]` notation are accepted and stored identically,
+so mixing formats never produces false change detections.
+
+## CLI reference
+
+All commands accept a global `--db / -d` flag.  When omitted, `caldb` looks
+for a matched `.db` / `.csv` pair in the current directory.
+
+```
+caldb [--db FILE] [--test] COMMAND [OPTIONS]
+```
+
+`--test` rolls back every write — useful for a dry run of `add` / `update`.
+
+---
+
+### `sync` — diff CSV → DB and record all changes
+
+```bash
+caldb sync                          # auto-detect pair, no comment
+caldb sync -c "sprint 5 tuning"     # attach a comment to all changes
+caldb sync -f path/to/file.csv      # explicit CSV (DB derived from name)
+caldb sync --dry-run                # show diff without writing
+```
+
+Output:
+```
+Auto: PROJECT_A_cal.db / PROJECT_A_cal.csv
+Sync: 2 added, 5 changed, 0 deleted (7 total)
+
+CHANGED:
+  ~ TempCtlSetPnt
+  ~ FanSpdReqMax
+  ...
+```
+
+---
+
+### `review` — interactively confirm changes before writing
+
+Like `sync`, but steps through each change one at a time so you can add a
+per-parameter comment and decide whether to apply it.
+
+```bash
+caldb review                       # auto-detect pair
+caldb review -f path/to/file.csv
+```
+
+For each change:
+
+```
+--- [2/5]  UPDATE  TempCtlSetPnt
+    value:    22.5  ->  24.0
+    comment > cold weather target
+```
+
+| Input    | Action                                            |
+|----------|---------------------------------------------------|
+| Enter    | confirm, no comment                               |
+| `<text>` | confirm with that text as the change comment      |
+| `s`      | skip — do not apply this change                   |
+| `q`      | stop reviewing, apply everything confirmed so far |
+| `a`      | abort — apply nothing                             |
+
+---
+
+### `changes` — recent changes across all parameters
+
+```bash
+caldb changes                  # last 10 (default)
+caldb changes -n 25            # last 25
+caldb changes -n 0             # all
+caldb changes -t update        # filter: add | update | delete
+```
+
+Output:
+```
+5 change(s) (last 10):
+
+  2026-06-08 14:10:56  UPDATE  TempCtlSetPnt  [sprint 5 tuning]
+           value:   22.5  ->  24.0
+  2026-06-08 14:10:56  UPDATE  FanSpdReqMax  [sprint 5 tuning]
+           value:   100  ->  90
+  2026-06-08 14:10:55  ADD     PmpSpdMin  [initial import v0]
+           value:   500
+```
+
+---
+
+### `log` — history for one parameter
+
+```bash
+caldb log -n TempCtlSetPnt        # last 20 entries (default)
+caldb log -n TempCtlSetPnt -l 5   # last 5
+```
+
+Output:
+```
+History for 'TempCtlSetPnt' (2 entries):
+
+  2026-06-08 14:10:56  UPDATE  [sprint 5 tuning]
+    value:   22.5  ->  24.0
+  2026-06-08 14:10:55  ADD  [initial import v0]
+    value:   22.5
+```
+
+---
+
+### `add` — add a single parameter via CLI
+
+```bash
+caldb add -n FanSpdRateLim -v 10 --datatype uint8 --unit "per/s" --size 1 \
+          -m "rate limiter added in sprint 5"
+```
+
+---
+
+### `update` — change the value of a parameter
+
+```bash
+caldb update -n PmpSpdMin -v 600 -m "raised idle speed to avoid stall"
+```
+
+---
+
+### `rename` — rename a parameter (old name kept as alias)
+
+```bash
+caldb rename -i OldParamName --new-name NewParamName -m "renamed per naming convention"
+```
+
+---
+
+### `delete` — soft-delete a parameter (kept in history)
+
+```bash
+caldb delete -n FaultRecovTout -c "merged into FaultTout"
+```
+
+---
+
+### `load` — bulk-import from CSV or JSON (no change tracking)
+
+```bash
+caldb load                          # auto-detect CSV
+caldb load -f params.csv
+caldb load -f params.json
+```
+
+> Use `sync` instead of `load` when you want changes recorded in history.
+
+---
+
+### `export` — export DB to CSV
+
+```bash
+caldb export                        # writes <dbname>.csv
+caldb export -f output.csv
+```
+
+---
+
+### `install-hook` — auto-sync on every git commit
+
+Writes a `pre-commit` hook into the current repository so that `caldb sync`
+runs automatically whenever you commit a CSV file.  The hook only fires for
+CSV files that are actually staged — unrelated commits are not affected.  If a
+`pre-commit` hook already exists the caldb block is appended to it.
+
+```bash
+cd project/           # must be inside a git repo
+caldb install-hook
+```
+
+After installation, the typical commit flow becomes:
+
+```bash
+# Edit PROJECT_A_cal.csv in Excel
+git add PROJECT_A_cal.csv
+git commit -m "sprint 5 cold-weather tuning"
+# pre-commit hook runs caldb sync automatically,
+# stages PROJECT_A_cal.db, and includes it in the commit
+```
+
+---
+
+## Auto-detection rules
+
+| `--db`   | `--file`  | DB used                           | CSV used       |
+|----------|-----------|-----------------------------------|----------------|
+| omitted  | omitted   | matched `.db`/`.csv` pair in cwd  | same base name |
+| `foo.db` | omitted   | `foo.db`                          | `foo.csv`      |
+| omitted  | `foo.csv` | `foo.db` (must exist)             | `foo.csv`      |
+| `foo.db` | `bar.csv` | `foo.db`                          | `bar.csv`      |
+
+If multiple pairs exist in the directory, `--db` is required.
+
+---
+
+## Programmatic API
 
 ```python
 from calibrationdb import CalibrationDatabase, CalibrationParameter
 
-db = CalibrationDatabase('data/calibration.db')
+db = CalibrationDatabase('PROJECT_A_cal.db')
 
-# Add a parameter
-param = CalibrationParameter(
-    name='ParamNew1',
-    value='[0 80]',
-    datatype='uint8',
-    unit='per',
-    size='2',
-    description='param description for testing',
-    aliases='ParamOld1;ParamOld2',
-    mod_comment='Initial parameter addition'
+# Sync from CSV and record changes
+added, changed, deleted = db.sync_from_csv(
+    'PROJECT_A_cal.csv',
+    sync_comment='sprint 5 tuning',
 )
-db.add_parameter('cal-', param)
 
-# Update a parameter (only value)
-param_update = CalibrationParameter(
-    name='ParamNew1',
-    value='[10 90]',
-    mod_comment='Updated value for testing'
-)
-db.update_parameter('cal-', param_update)
+# History for one parameter
+for entry in db.get_parameter_log('TempCtlSetPnt'):
+    print(entry['ChangeDateTime'], entry['ChangeType'], entry['NewValue'])
 
-# Rename a parameter
-db.rename_parameter('ParamNew1', 'CalNewName1', 'Updated name for clarity')
-
-# Export to CSV
-db.export_to_csv('data/calibration_export.csv')
+# Recent changes across all parameters
+for entry in db.get_recent_changes(limit=10):
+    print(entry['Name'], entry['ChangeType'], entry['OldValue'], '->', entry['NewValue'])
 
 db.close()
 ```
 
-### Command-Line Interface
-The `caldb` command provides a CLI for managing the database. Run with `--help` for details:
+## Project structure
 
-```bash
-caldb --help
-```
-
-#### CLI Commands
-- **Add a parameter**:
-  ```bash
-  caldb --db data/calibration.db add --prefix cal- --name ParamNew1 --value "[0 80]" --datatype uint8 --unit per --size 2 --description "param description" --aliases "ParamOld1;ParamOld2" --mod-comment "Initial addition"
-  ```
-- **Update a parameter** (updates only value):
-  ```bash
-  caldb --db data/calibration.db update --prefix cal- --name ParamNew1 --value "[10 90]" --mod-comment "Updated value for testing"
-  ```
-- **Rename a parameter**:
-  ```bash
-  caldb --db data/calibration.db rename --identifier ParamNew1 --new-name CalNewName1 --mod-comment "Updated name for clarity"
-  ```
-- **Load from CSV**:
-  ```bash
-  caldb --db data/calibration.db load --file data/example_cals.cal --type csv
-  ```
-- **Export to CSV**:
-  ```bash
-  caldb --db data/calibration.db export --file data/calibration_export.csv
-  ```
-
-### Input File Formats
-- **CSV**: Expected columns: `MID`, `UID`, `Name`, `Value`, `COMMENT`, `DataType`, `Unit`, `Size`, `Min`, `Max`, `Description`, `ALIASES`, `ModifiedDateTime`, `ModificationComment`, `PreviousValues`. Only `Name` is required; others are optional.
-- **JSON**: Array of objects with the same fields as CSV. Example:
-  ```json
-  [
-      {
-          "Name": "ParamNew1",
-          "Value": "[0 80]",
-          "DataType": "uint8",
-          "Unit": "per",
-          "Size": "2",
-          "Description": "param description for testing",
-          "ALIASES": "ParamOld1;ParamOld2",
-          "ModificationComment": "Initial addition"
-      }
-  ]
-  ```
-
-## Project Structure
-```
-CalibrationDB/
+```text
+calibrationdb/
 ├── src/calibrationdb/
 │   ├── __init__.py
-│   ├── cal_db_util.py      # Core database logic
-│   ├── cal_db_cli.py       # Command-line interface
+│   ├── cal_db_util.py      # CalibrationDatabase class
+│   └── cal_db_cli.py       # CLI (click)
+├── example/
+│   ├── example_cal.csv     # sample multi-column CSV (12 parameters)
+│   └── run_example.ps1     # full workflow walkthrough (PowerShell)
 ├── data/
-│   ├── calibration.db      # SQLite database (created automatically, not in repo)
-│   ├── example_cals.cal    # Input CSV file (optional, not in repo)
-│   ├── calibration_export.csv  # Output CSV file (not in repo)
+│   └── example_cals.csv    # sample single-column CSV (28 parameters)
 ├── pyproject.toml
-├── MANIFEST.in
-├── LICENSE
-├── README.md
-├── .gitignore
+└── README.md
 ```
 
-## Notes
-- The database is stored in `data/calibration.db` by default.
-- The `PreviousValues` field tracks the history of parameter values in a semicolon-separated list.
-- Modification comments automatically include changes (e.g., "Value: old -> new" or "Name: old -> new").
-- The `add_parameter` method prevents adding parameters with names that already exist in `Name` or `ALIASES`.
-- The `update_parameter` method only modifies the `Value` field, preserving other attributes.
-
-## Contributing
-Contributions are welcome! Please submit issues or pull requests on GitHub.
-
 ## License
-MIT License
+
+MIT

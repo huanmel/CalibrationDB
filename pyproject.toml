@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A Python package for managing calibration parameters in a SQLite database"
 readme = "README.md"
 requires-python = ">=3.6"
+dependencies = ["click>=8.0"]
 # license = "MIT AND (Apache-2.0 OR BSD-2-Clause)"
 authors = [
     {name = "Ivan MeL"}
