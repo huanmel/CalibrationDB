@@ -400,8 +400,14 @@ calibrationdb/
 ├── data/
 │   └── example_cals.csv    # sample single-column CSV (28 parameters)
 ├── pyproject.toml
+├── ROADMAP.md
 └── README.md
 ```
+
+## Roadmap
+
+Planned features — `status`, `validate`, `search`, `tag`, `restore`, `diff`, `merge`,
+and more — are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## License
 
