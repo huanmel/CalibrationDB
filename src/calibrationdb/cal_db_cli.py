@@ -137,9 +137,12 @@ def _git_file_status(path):
     or None if git is unavailable or the file is not in a repo.
     """
     abs_path = os.path.abspath(path)
+    fname = os.path.basename(abs_path)
+    # Run from the file's own directory and pass just the basename with '--'
+    # so git doesn't misinterpret an absolute Windows path as a flag.
     try:
         result = subprocess.run(
-            ['git', 'status', '--porcelain', abs_path],
+            ['git', 'status', '--porcelain', '--', fname],
             capture_output=True, text=True,
             cwd=os.path.dirname(abs_path) or '.',
         )
@@ -147,20 +150,23 @@ def _git_file_status(path):
         return None
     if result.returncode != 0:
         return None
-    output = result.stdout.strip()
-    if not output:
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        # Verify the line actually refers to our file (defensive against edge cases)
+        file_in_line = line[3:].strip().replace('/', os.sep)
+        if os.path.basename(file_in_line) != fname:
+            continue
+        x, y = line[0], line[1]
+        if x == '?' and y == '?':
+            return 'untracked'
+        if x != ' ' and y != ' ':
+            return 'both'
+        if x != ' ':
+            return 'staged'
+        if y != ' ':
+            return 'modified'
         return 'clean'
-    for line in output.splitlines():
-        if len(line) >= 2:
-            x, y = line[0], line[1]
-            if x == '?' and y == '?':
-                return 'untracked'
-            if x != ' ' and y != ' ':
-                return 'both'
-            if x != ' ':
-                return 'staged'
-            if y != ' ':
-                return 'modified'
     return 'clean'
 
 
