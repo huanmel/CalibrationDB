@@ -366,7 +366,7 @@ caldb changes -n 25                  # last 25
 caldb changes -n 0                   # all
 caldb changes -t update              # filter: add | update | delete
 caldb changes -s 2026-06-01          # on or after a date
-caldb changes -s "sprint 4 tuning"   # on or after a named sync session
+caldb changes -s "sprint 4 tuning"   # on or after the sync with that -c comment
 caldb changes -c                     # compact: one line per change
 ```
 
