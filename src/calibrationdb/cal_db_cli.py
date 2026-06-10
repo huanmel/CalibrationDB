@@ -1012,6 +1012,28 @@ def diff(ctx, file, name):
     )
 
 
+def _emit_tags_between(tags_desc, after_dt, until_dt):
+    """Print tag markers for tags whose timestamp falls in (until_dt, after_dt].
+
+    tags_desc is a list of tag dicts sorted newest-first; consumed in-place
+    by popping from the front while tags fall in the window.
+    after_dt  -- upper bound (inclusive); None means no upper bound
+    until_dt  -- lower bound (exclusive); None means no lower bound
+    """
+    while tags_desc:
+        tag_dt = tags_desc[0]['ChangeDateTime']
+        in_window = (
+            (after_dt is None or tag_dt <= after_dt) and
+            (until_dt is None or tag_dt > until_dt)
+        )
+        if not in_window:
+            break
+        t = tags_desc.pop(0)
+        label = t['comment'] if t['comment'] else ''
+        suffix = f'  "{label}"' if label else ''
+        click.secho(f"  (tag: {t['name']}{suffix})", fg='cyan')
+
+
 @cli.command()
 @click.option('-n', '--count', default=10, show_default=True,
               help='Number of entries to show (0 = all)')
@@ -1021,9 +1043,13 @@ def diff(ctx, file, name):
 @click.option('--since', '-s', default=None,
               help='Show changes on or after a date (2026-06-01) or sync comment')
 @click.option('--compact', '-c', is_flag=True, help='One line per change')
+@click.option('--no-tags', 'no_tags', is_flag=True, help='Hide tag markers')
 @click.pass_context
-def changes(ctx, count, change_type, since, compact):
+def changes(ctx, count, change_type, since, compact, no_tags):
     """Show recent changes across all parameters.
+
+    Tags are shown as markers interleaved with changes (like git log --oneline).
+    Use --no-tags to suppress them.
 
     \b
     Examples:
@@ -1039,6 +1065,8 @@ def changes(ctx, count, change_type, since, compact):
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     entries = db.get_recent_changes(limit=count, since=since)
+    # Fetch all tags (newest first) so we can interleave them
+    tags_desc = list(reversed(db.list_tags())) if not no_tags else []
     db.close()
 
     if since and not entries:
@@ -1052,8 +1080,12 @@ def changes(ctx, count, change_type, since, compact):
         click.echo("No changes recorded yet.")
         return
 
+    # Emit any tags newer than the first (most recent) change entry
+    if tags_desc:
+        _emit_tags_between(tags_desc, after_dt=None, until_dt=entries[0]['ChangeDateTime'])
+
     if compact:
-        for e in entries:
+        for i, e in enumerate(entries):
             ts = e['ChangeDateTime'][:19].replace('T', ' ')
             ctype = e['ChangeType'].upper()
             sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
@@ -1064,13 +1096,16 @@ def changes(ctx, count, change_type, since, compact):
             else:
                 detail = ''
             click.echo(f"{ts}  {ctype:6s}  {e['Name']}{detail}{sc}")
+            # Emit tags that fall between this entry and the next
+            next_dt = entries[i + 1]['ChangeDateTime'] if i + 1 < len(entries) else None
+            _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
         return
 
     label = f"last {count}" if count else "all"
     type_label = f" [{change_type}]" if change_type else ""
     click.echo(f"{len(entries)} change(s){type_label} ({label}):\n")
 
-    for e in entries:
+    for i, e in enumerate(entries):
         ts = e['ChangeDateTime'][:19].replace('T', ' ')
         ctype = e['ChangeType'].upper()
         sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
@@ -1083,6 +1118,9 @@ def changes(ctx, count, change_type, since, compact):
             click.echo(f"           value:   {e['NewValue']}")
         elif ctype == 'DELETE':
             click.echo(f"           value at deletion: {e['OldValue']}")
+        # Emit tags that fall between this entry and the next
+        next_dt = entries[i + 1]['ChangeDateTime'] if i + 1 < len(entries) else None
+        _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
 
 
 @cli.command('install-hook')
