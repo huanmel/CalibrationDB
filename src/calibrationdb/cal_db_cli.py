@@ -695,15 +695,16 @@ def status(ctx, file):
         click.echo(f"Both CSV and DB changed since last sync ({ts}) -- conflict, resolve manually")
         exit_code = 3
 
-    git_st = _git_file_status(csv_path)
     _GIT_LABELS = {
         'modified':  'modified (not staged)',
         'staged':    'staged for commit',
         'both':      'modified and staged',
         'untracked': 'untracked',
     }
-    if git_st and git_st != 'clean':
-        click.echo(f"CSV git:  {_GIT_LABELS.get(git_st, git_st)}")
+    for label, fpath in [('CSV', csv_path), ('DB ', db_path)]:
+        st = _git_file_status(fpath)
+        if st and st != 'clean':
+            click.echo(f"{label} git:  {_GIT_LABELS.get(st, st)}")
 
     ctx.exit(exit_code)
 
