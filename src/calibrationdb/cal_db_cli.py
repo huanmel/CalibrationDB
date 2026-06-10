@@ -383,6 +383,31 @@ def export(ctx, file):
 
 @cli.command()
 @click.option('--name', '-n', default=None,
+              help='Parameter name or glob pattern. Omit to check all.')
+@click.pass_context
+def validate(ctx, name):
+    """Check parameter values against their Min/Max/DataType/Size constraints."""
+    db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    results = db.validate_parameters(name)
+    db.close()
+
+    if not results:
+        label = f"matching '{name}'" if name else "all parameters"
+        click.echo(f"OK — no constraint violations ({label}).")
+        return
+
+    click.echo(f"{len(results)} parameter(s) with violations:\n")
+    for r in results:
+        click.secho(f"  {r['name']}  ({r['value']})", bold=True)
+        for w in r['warnings']:
+            click.echo(f"    ! {w}")
+    ctx.exit(1)
+
+
+@cli.command()
+@click.option('--name', '-n', default=None,
               help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.')
 @click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
 @click.pass_context

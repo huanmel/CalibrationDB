@@ -142,6 +142,28 @@ caldb [--db FILE] [--test] COMMAND [OPTIONS]
 
 ---
 
+### `validate` — check values against constraints
+
+```bash
+caldb validate                   # check all parameters
+caldb validate -n "FanSpd*"      # subset by name/pattern
+```
+
+Output:
+```
+2 parameter(s) with violations:
+
+  BadParam  (150)
+    ! 150 > Max (100.0)
+  WrongSize  (10 20)
+    ! size: expected 4 element(s), got 2
+```
+
+Exits `0` if no violations, `1` if any found.
+The same check runs automatically (as a non-blocking warning) inside `sync`, `add`, and `update`.
+
+---
+
 ### `status` — check sync state between DB and CSV
 
 ```bash

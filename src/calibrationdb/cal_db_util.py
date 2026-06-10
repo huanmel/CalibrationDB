@@ -32,6 +32,49 @@ def _normalise_value(v):
     return _canonicalise_value(v)
 
 
+_INT_TYPES = {
+    'boolean', 'bool',
+    'uint8', 'uint16', 'uint32', 'uint64',
+    'int8',  'int16',  'int32',  'int64',
+}
+_NUMERIC_TYPES = _INT_TYPES | {'single', 'double', 'float', 'float32', 'float64'}
+
+
+def _validate_value(value, min_val=None, max_val=None, datatype=None, size=None):
+    """Check value against constraints. Returns list of warning strings."""
+    issues = []
+    if not value:
+        return issues
+    elements = _canonicalise_value(value).split()
+
+    if size:
+        try:
+            if len(elements) != int(size):
+                issues.append(f"size: expected {int(size)} element(s), got {len(elements)}")
+        except (ValueError, TypeError):
+            pass
+
+    dt = (datatype or '').lower().strip()
+    is_int     = dt in _INT_TYPES
+    is_numeric = dt in _NUMERIC_TYPES
+
+    for elem in elements:
+        try:
+            num = float(elem)
+        except (ValueError, TypeError):
+            if is_numeric:
+                issues.append(f"non-numeric value '{elem}' for type {datatype}")
+            continue
+        if is_int and num != int(num):
+            issues.append(f"non-integer {elem} for type {datatype}")
+        if min_val is not None and num < float(min_val):
+            issues.append(f"{elem} < Min ({min_val})")
+        if max_val is not None and num > float(max_val):
+            issues.append(f"{elem} > Max ({max_val})")
+
+    return issues
+
+
 def _parse_multicol_row(row):
     """Parse a row from the multi-column CSV format (Value_1 .. Value_10)."""
     parts = [row.get(c, '').strip() for c in _VALUE_COLS]
@@ -166,6 +209,24 @@ class CalibrationDatabase:
               old_comment, new_comment,
               datetime.now().isoformat(), sync_comment))
 
+    def validate_parameters(self, pattern=None):
+        """Validate active parameters against their Min/Max/DataType/Size constraints.
+
+        Returns list of {name, value, warnings} for parameters with violations.
+        """
+        results = []
+        for r in self.get_parameters(pattern):
+            issues = _validate_value(
+                r['Value'],
+                min_val=r.get('Min'),
+                max_val=r.get('Max'),
+                datatype=r.get('DataType'),
+                size=r.get('Size'),
+            )
+            if issues:
+                results.append({'name': r['Name'], 'value': r['Value'], 'warnings': issues})
+        return results
+
     def get_parameters(self, pattern=None):
         """Return a list of active parameter row dicts.
 
@@ -222,6 +283,10 @@ class CalibrationDatabase:
             print(f"Warning: Parameter '{param.name}' already exists. Use update to modify.")
             return False
 
+        for w in _validate_value(param.value, param.min_val, param.max_val,
+                                  param.datatype, param.size):
+            print(f"Warning: {param.name}: {w}")
+
         try:
             cur.execute('''
                 INSERT INTO calibration
@@ -272,6 +337,11 @@ class CalibrationDatabase:
 
         prev_values = f"{old_prev};{old_value}" if old_prev else old_value or ''
         value = param.value if param.value is not None else old_value
+
+        if param.value is not None:
+            for w in _validate_value(value, row.get('Min'), row.get('Max'),
+                                     row.get('DataType'), row.get('Size')):
+                print(f"Warning: {param.name}: {w}")
 
         cur.execute('''
             UPDATE calibration
@@ -425,6 +495,8 @@ class CalibrationDatabase:
         for p in diff['added']:
             if only is not None and p.name not in only:
                 continue
+            for w in _validate_value(p.value, p.min_val, p.max_val, p.datatype, p.size):
+                print(f"Warning: {p.name}: {w}")
             comment = _comment(p.name)
             uid = prefix + p.name
             mid = hashlib.md5(uid.encode()).hexdigest()
@@ -451,8 +523,10 @@ class CalibrationDatabase:
             name = ch['name']
             if only is not None and name not in only:
                 continue
-            comment = _comment(name)
             p = ch['param']
+            for w in _validate_value(p.value, p.min_val, p.max_val, p.datatype, p.size):
+                print(f"Warning: {name}: {w}")
+            comment = _comment(name)
             db_row = db_params[name]
             old_value = ch['old_value']
             old_prev = db_row.get('PreviousValues') or ''
