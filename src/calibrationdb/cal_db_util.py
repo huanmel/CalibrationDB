@@ -2,6 +2,7 @@ import sqlite3
 import hashlib
 import json
 import csv
+import fnmatch
 from datetime import datetime
 from collections import namedtuple
 
@@ -182,6 +183,13 @@ class CalibrationDatabase:
             CREATE TABLE IF NOT EXISTS _caldb_meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS _caldb_tags (
+                name          TEXT PRIMARY KEY,
+                ChangeDateTime TEXT,
+                comment        TEXT
             )
         ''')
         self.conn.commit()
@@ -644,6 +652,86 @@ class CalibrationDatabase:
         cur.execute("SELECT value FROM _caldb_meta WHERE key = 'db_changed'")
         row = cur.fetchone()
         return row[0] if row else None
+
+    # ------------------------------------------------------------------
+    # Tags
+    # ------------------------------------------------------------------
+
+    def tag_snapshot(self, name, comment=''):
+        """Create a named tag at the current point in time.
+
+        The tag records the current datetime so that parameter values
+        can be queried as they were at that moment via get_parameters_at_tag.
+        Returns False (and prints a warning) if the tag name already exists.
+        """
+        cur = self.conn.cursor()
+        cur.execute("SELECT name FROM _caldb_tags WHERE name = ?", (name,))
+        if cur.fetchone():
+            print(f"Tag '{name}' already exists.")
+            return False
+        dt = datetime.now().isoformat()
+        cur.execute(
+            "INSERT INTO _caldb_tags (name, ChangeDateTime, comment) VALUES (?, ?, ?)",
+            (name, dt, comment),
+        )
+        self.conn.commit()
+        print(f"Tagged: {name}  ({dt[:19].replace('T', ' ')})")
+        return True
+
+    def list_tags(self):
+        """Return all tags as a list of dicts, oldest first."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT name, ChangeDateTime, comment FROM _caldb_tags ORDER BY ChangeDateTime"
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def get_parameters_at_tag(self, tag_name, pattern=None):
+        """Return (tag_datetime_str, [row_dict, ...]) for parameters at a tag.
+
+        Value and Comment are taken from history (what they were at that time).
+        DataType, Unit, Size, Min, Max, Description, Source come from the
+        current calibration table (these fields are not tracked in history).
+
+        Returns (None, None) if the tag does not exist.
+        Parameters that were deleted before the tag time are excluded.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT ChangeDateTime FROM _caldb_tags WHERE name = ?", (tag_name,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None, None
+        tag_time = row[0]
+
+        cur.execute('''
+            SELECT h.Name,
+                   h.NewValue    AS Value,
+                   h.NewComment  AS COMMENT,
+                   c.DataType, c.Unit, c.Size, c.Min, c.Max,
+                   c.Description, c.Who, c.Source
+            FROM calibration_history h
+            LEFT JOIN calibration c ON c.Name = h.Name
+            WHERE h.id IN (
+                SELECT MAX(id) FROM calibration_history
+                WHERE ChangeDateTime <= ?
+                GROUP BY Name
+            )
+            AND h.ChangeType != 'delete'
+            ORDER BY h.Name
+        ''', (tag_time,))
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        if pattern:
+            if '*' in pattern or '?' in pattern:
+                rows = [r for r in rows if fnmatch.fnmatch(r['Name'], pattern)]
+            else:
+                rows = [r for r in rows if r['Name'] == pattern]
+
+        return tag_time, rows
 
     def get_sync_status(self, csv_path):
         """Compare csv_path's current content against the stored hash.

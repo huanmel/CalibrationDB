@@ -578,29 +578,12 @@ def validate(ctx, name):
     ctx.exit(1)
 
 
-@cli.command()
-@click.option('--name', '-n', default=None,
-              help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.')
-@click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
-@click.pass_context
-def show(ctx, name, compact):
-    """Show current value and metadata for one or more parameters."""
-    db_path = _resolve_db(ctx.obj['db'])
-    _warn_if_unsynced(db_path)
-    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    rows = db.get_parameters(name)
-    db.close()
-
-    if not rows:
-        msg = f"No parameter found matching '{name}'." if name else "No parameters in DB."
-        click.echo(msg)
-        return
-
+def _print_param_rows(rows, compact):
+    """Shared display logic for show and search."""
     if compact:
         for r in rows:
             click.echo(f"{r['Name']}={r['Value']}")
         return
-
     for r in rows:
         click.echo(f"{r['Name']}")
         click.echo(f"  value:    {r['Value']}")
@@ -620,6 +603,43 @@ def show(ctx, name, compact):
             who_src = '  /  '.join(x for x in [r.get('Who'), r.get('Source')] if x)
             click.echo(f"  who/src:  {who_src}")
         click.echo()
+
+
+@cli.command()
+@click.option('--name', '-n', default=None,
+              help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.')
+@click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
+@click.option('--at', default=None, metavar='TAG',
+              help='Show values as they were at a named tag (see: caldb tags)')
+@click.pass_context
+def show(ctx, name, compact, at):
+    """Show current value and metadata for one or more parameters."""
+    db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+
+    if at:
+        tag_time, rows = db.get_parameters_at_tag(at, pattern=name)
+        db.close()
+        if tag_time is None:
+            click.echo(f"Tag '{at}' not found. Use 'caldb tags' to list available tags.")
+            return
+        if not rows:
+            msg = (f"No parameters matching '{name}' at tag '{at}'."
+                   if name else f"No parameters recorded at tag '{at}'.")
+            click.echo(msg)
+            return
+        ts = tag_time[:19].replace('T', ' ')
+        click.echo(f"[at tag '{at}'  --  {ts}]\n")
+    else:
+        rows = db.get_parameters(name)
+        db.close()
+        if not rows:
+            msg = f"No parameter found matching '{name}'." if name else "No parameters in DB."
+            click.echo(msg)
+            return
+
+    _print_param_rows(rows, compact)
 
 
 @cli.command()
@@ -664,30 +684,47 @@ def search(ctx, name, description, datatype, unit, source, compact):
         click.echo("No parameters match the given filters.")
         return
 
-    if compact:
-        for r in rows:
-            click.echo(f"{r['Name']}={r['Value']}")
+    _print_param_rows(rows, compact)
+
+
+@cli.command()
+@click.option('--name', '-n', required=True, help='Tag name (e.g. v1.2, sprint-5)')
+@click.option('--message', '-m', default='', help='Short description of this snapshot')
+@click.pass_context
+def tag(ctx, name, message):
+    """Create a named snapshot tag at the current point in history.
+
+    \b
+    Examples:
+      caldb tag -n v1.2 -m "sprint 5 release candidate"
+      caldb tag -n pre-tuning
+
+    Use 'caldb tags' to list tags and 'caldb show --at <tag>' to query them.
+    """
+    db_path = _resolve_db(ctx.obj['db'])
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    db.tag_snapshot(name, message)
+    db.close()
+
+
+@cli.command()
+@click.pass_context
+def tags(ctx):
+    """List all snapshot tags."""
+    db_path = _resolve_db(ctx.obj['db'])
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    tag_list = db.list_tags()
+    db.close()
+
+    if not tag_list:
+        click.echo("No tags yet.  Create one with: caldb tag -n <name>")
         return
 
-    for r in rows:
-        click.echo(f"{r['Name']}")
-        click.echo(f"  value:    {r['Value']}")
-        parts = []
-        if r.get('DataType'): parts.append(r['DataType'])
-        if r.get('Unit'):     parts.append(r['Unit'])
-        if r.get('Size'):     parts.append(f"size={r['Size']}")
-        if parts:
-            click.echo(f"  type:     {', '.join(parts)}")
-        if r.get('Min') is not None or r.get('Max') is not None:
-            click.echo(f"  range:    {r['Min']} .. {r['Max']}")
-        if r.get('Description'):
-            click.echo(f"  desc:     {r['Description']}")
-        if r.get('COMMENT'):
-            click.echo(f"  comment:  {r['COMMENT']}")
-        if r.get('Who') or r.get('Source'):
-            who_src = '  /  '.join(x for x in [r.get('Who'), r.get('Source')] if x)
-            click.echo(f"  who/src:  {who_src}")
-        click.echo()
+    click.echo(f"{len(tag_list)} tag(s):\n")
+    for t in tag_list:
+        ts = t['ChangeDateTime'][:19].replace('T', ' ')
+        cmt = f"  {t['comment']}" if t['comment'] else ''
+        click.echo(f"  {ts}  {t['name']}{cmt}")
 
 
 @cli.command()
