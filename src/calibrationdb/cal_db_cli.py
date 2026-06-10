@@ -1020,6 +1020,19 @@ def diff(ctx, file, name):
     )
 
 
+def _format_change_compact(e):
+    ts    = e['ChangeDateTime'][:19].replace('T', ' ')
+    ctype = e['ChangeType'].upper()
+    sc    = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
+    if ctype in ('UPDATE', 'RESTORE'):
+        detail = f"  {e['OldValue']} -> {e['NewValue']}"
+    elif ctype == 'ADD':
+        detail = f"  {e['NewValue']}"
+    else:
+        detail = ''
+    return f"{ts}  {ctype:6s}  {e['Name']}{detail}{sc}"
+
+
 def _emit_tags_between(tags_desc, after_dt, until_dt):
     """Print tag markers for tags whose timestamp falls in (until_dt, after_dt].
 
@@ -1052,12 +1065,14 @@ def _emit_tags_between(tags_desc, after_dt, until_dt):
               help='Show changes on or after a date (2026-06-01) or sync comment')
 @click.option('--compact', '-c', is_flag=True, help='One line per change')
 @click.option('--no-tags', 'no_tags', is_flag=True, help='Hide tag markers')
+@click.option('--by-tag', 'by_tag', is_flag=True,
+              help='Group changes between tag milestones (implies -n 0)')
 @click.pass_context
-def changes(ctx, count, change_type, since, compact, no_tags):
+def changes(ctx, count, change_type, since, compact, no_tags, by_tag):
     """Show recent changes across all parameters.
 
     Tags are shown as markers interleaved with changes (like git log --oneline).
-    Use --no-tags to suppress them.
+    Use --by-tag to group changes between tag milestones.
 
     \b
     Examples:
@@ -1068,13 +1083,15 @@ def changes(ctx, count, change_type, since, compact, no_tags):
       caldb changes -s 2026-06-01
       caldb changes -s "sprint 4 tuning"
       caldb changes -c           # compact, one line per change
+      caldb changes --by-tag     # grouped by tag milestones
     """
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    entries = db.get_recent_changes(limit=count, since=since)
-    # Fetch all tags (newest first) so we can interleave them
-    tags_desc = list(reversed(db.list_tags())) if not no_tags else []
+    # --by-tag needs the full history to build sections
+    fetch_limit = 0 if by_tag else count
+    entries = db.get_recent_changes(limit=fetch_limit, since=since)
+    tags = db.list_tags()   # oldest first
     db.close()
 
     if since and not entries:
@@ -1088,23 +1105,70 @@ def changes(ctx, count, change_type, since, compact, no_tags):
         click.echo("No changes recorded yet.")
         return
 
+    # ------------------------------------------------------------------
+    # --by-tag: group changes between consecutive tag boundaries
+    # ------------------------------------------------------------------
+    if by_tag:
+        if not tags:
+            click.echo("No tags found -- create one with 'caldb tag -n <name>'.")
+            click.echo()
+
+        # Build sections newest -> oldest:
+        #   (header, upper_dt_exclusive, lower_dt_inclusive)
+        # Changes in section: lower_dt < change.dt <= upper_dt
+        # (None upper = no upper bound; None lower = no lower bound)
+        sections = []
+        tags_desc = list(reversed(tags))   # newest first
+        if tags_desc:
+            sections.append((
+                f"After {tags_desc[0]['name']}:",
+                None,
+                tags_desc[0]['ChangeDateTime'],
+            ))
+            for i in range(len(tags_desc) - 1):
+                newer, older = tags_desc[i], tags_desc[i + 1]
+                label = f'  "{newer["comment"]}"' if newer['comment'] else ''
+                sections.append((
+                    f"{older['name']}..{newer['name']}{label}:",
+                    newer['ChangeDateTime'],
+                    older['ChangeDateTime'],
+                ))
+            oldest = tags_desc[-1]
+            label = f'  "{oldest["comment"]}"' if oldest['comment'] else ''
+            sections.append((
+                f"Before {oldest['name']}{label}:",
+                oldest['ChangeDateTime'],
+                None,
+            ))
+        else:
+            sections.append(("All changes (no tags):", None, None))
+
+        for header, upper_dt, lower_dt in sections:
+            section_entries = [
+                e for e in entries
+                if (upper_dt is None or e['ChangeDateTime'] <= upper_dt)
+                and (lower_dt is None or e['ChangeDateTime'] > lower_dt)
+            ]
+            if not section_entries:
+                continue
+            click.secho(header, fg='cyan')
+            for e in section_entries:
+                click.echo(f"  {_format_change_compact(e)}")
+            click.echo()
+        return
+
+    # ------------------------------------------------------------------
+    # Standard interleaved view
+    # ------------------------------------------------------------------
+    tags_desc = list(reversed(tags)) if not no_tags else []
+
     # Emit any tags newer than the first (most recent) change entry
     if tags_desc:
         _emit_tags_between(tags_desc, after_dt=None, until_dt=entries[0]['ChangeDateTime'])
 
     if compact:
         for i, e in enumerate(entries):
-            ts = e['ChangeDateTime'][:19].replace('T', ' ')
-            ctype = e['ChangeType'].upper()
-            sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
-            if ctype in ('UPDATE', 'RESTORE'):
-                detail = f"  {e['OldValue']} -> {e['NewValue']}"
-            elif ctype == 'ADD':
-                detail = f"  {e['NewValue']}"
-            else:
-                detail = ''
-            click.echo(f"{ts}  {ctype:6s}  {e['Name']}{detail}{sc}")
-            # Emit tags that fall between this entry and the next
+            click.echo(_format_change_compact(e))
             next_dt = entries[i + 1]['ChangeDateTime'] if i + 1 < len(entries) else None
             _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
         return
@@ -1126,7 +1190,6 @@ def changes(ctx, count, change_type, since, compact, no_tags):
             click.echo(f"           value:   {e['NewValue']}")
         elif ctype == 'DELETE':
             click.echo(f"           value at deletion: {e['OldValue']}")
-        # Emit tags that fall between this entry and the next
         next_dt = entries[i + 1]['ChangeDateTime'] if i + 1 < len(entries) else None
         _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
 
