@@ -247,6 +247,40 @@ If the CSV has uncommitted git changes a warning is shown before any write.
 
 ---
 
+### `diff` — show what differs between the CSV and the DB
+
+Useful after `caldb status` reports a conflict (both sides changed since last
+sync). Shows the DB value and CSV value side by side for every parameter that
+differs, plus any parameters that exist only on one side.
+
+```bash
+caldb diff                          # compare auto-detected pair
+caldb diff -f path/to/file.csv      # explicit CSV
+caldb diff -n 'FanSpd*'            # filter by name / glob
+```
+
+Output:
+
+```text
+VALUE DIFFERS  (2 parameter(s)):
+
+  FanSpdReqMax
+    DB:   999
+    CSV:  100
+  FanSpdReqMin
+    DB:   20
+    CSV:  777
+
+Summary: 2 value conflicts, 0 CSV-only, 0 DB-only  (2 total differences)
+```
+
+To resolve a conflict shown by `diff`:
+
+- `caldb sync` — accept CSV values (overwrites CLI edits in DB)
+- `caldb sync --to-csv` — accept DB values (overwrites CSV edits)
+
+---
+
 ### `review` — interactively confirm changes before writing
 
 Like `sync`, but steps through each change one at a time so you can add a

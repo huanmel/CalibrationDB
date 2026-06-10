@@ -104,7 +104,7 @@ def _resolve_pair(db, csv_file):
     if len(pairs) > 1:
         names = ', '.join(os.path.basename(p[0]) for p in pairs)
         raise click.UsageError(f"Multiple DB/CSV pairs found ({names}). Specify --db.")
-    # No matched pairs — fall back to any single .db
+    # No matched pairs -- fall back to any single .db
     if len(db_files) == 1:
         click.echo(f"Using DB: {db_files[0]}")
         return db_files[0], os.path.splitext(db_files[0])[0] + '.csv'
@@ -281,7 +281,7 @@ def review(ctx, file, prefix):
       <any text>     confirm and attach that text as the change comment
       s              skip (do not apply this change)
       q              stop reviewing and apply everything confirmed so far
-      a              abort — apply nothing
+      a              abort -- apply nothing
     """
     db_path, file = _resolve_pair(ctx.obj['db'], file)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -293,7 +293,7 @@ def review(ctx, file, prefix):
     total   = len(added) + len(changed) + len(deleted)
 
     if total == 0:
-        click.echo("Nothing to review — DB is up to date.")
+        click.echo("Nothing to review -- DB is up to date.")
         db.close()
         return
 
@@ -359,12 +359,12 @@ def review(ctx, file, prefix):
 
     click.echo()
     if aborted:
-        click.echo("Aborted — nothing written.")
+        click.echo("Aborted -- nothing written.")
         db.close()
         return
 
     if not confirmed:
-        click.echo("Nothing confirmed — nothing written.")
+        click.echo("Nothing confirmed -- nothing written.")
         db.close()
         return
 
@@ -429,7 +429,7 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
             to_csv = True
         elif db_changed and csv_changed:
             click.secho(
-                "Both CSV and DB changed since last sync — conflict.\n"
+                "Both CSV and DB changed since last sync -- conflict.\n"
                 "Use --to-csv to overwrite CSV with DB values, or edit manually.",
                 fg='yellow', err=True,
             )
@@ -461,11 +461,13 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
         if n_changed == 0 and n_add == 0:
             if n_del_warn:
                 click.echo(
-                    f"Nothing to write back — {n_del_warn} CSV row(s) not in active DB "
+                    f"Nothing to write back -- {n_del_warn} CSV row(s) not in active DB "
                     f"(soft-deleted or not yet synced)."
                 )
             else:
-                click.echo("Nothing to write back — CSV matches DB.")
+                click.echo("Nothing to write back -- CSV matches DB.")
+            if not dry_run and not ctx.obj['test']:
+                db.store_csv_hash(csv_path)
             db.close()
             return
 
@@ -485,7 +487,7 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
                 for r in diff['to_add']:
                     click.echo(f"  + {r['Name']}  ({r.get('Value')})")
             if diff['to_delete']:
-                click.echo("\nCSV-only (not in active DB — left as-is):")
+                click.echo("\nCSV-only (not in active DB -- left as-is):")
                 for n in diff['to_delete']:
                     click.echo(f"  ? {n}")
             db.close()
@@ -518,7 +520,7 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
                 accepted.add(name)
 
         if not accepted:
-            click.echo("\nNothing accepted — CSV unchanged.")
+            click.echo("\nNothing accepted -- CSV unchanged.")
             db.close()
             return
 
@@ -567,7 +569,7 @@ def validate(ctx, name):
 
     if not results:
         label = f"matching '{name}'" if name else "all parameters"
-        click.echo(f"OK — no constraint violations ({label}).")
+        click.echo(f"OK -- no constraint violations ({label}).")
         return
 
     click.echo(f"{len(results)} parameter(s) with violations:\n")
@@ -822,7 +824,7 @@ def restore(ctx, name, at, comment, dry_run):
         click.echo(f"\n{count} parameter(s) restored.")
 
     else:
-        # Single parameter, no tag — revert to value before last change
+        # Single parameter, no tag -- revert to value before last change
         entries = db.get_parameter_log(name, limit=1)
         if not entries or entries[0].get('OldValue') is None:
             click.echo(f"No previous value to restore for '{name}'.")
@@ -918,7 +920,12 @@ def status(ctx, file):
         click.echo(f"DB changed via CLI ({dts}) -- run 'caldb sync --to-csv'")
         exit_code = 2
     else:
-        click.echo(f"Both CSV and DB changed since last sync ({ts}) -- conflict, resolve manually")
+        click.echo(
+            f"Both CSV and DB changed since last sync ({ts}) -- conflict\n"
+            f"  Run 'caldb diff' to see what differs on each side, then:\n"
+            f"  caldb sync           to accept CSV values (overwrites CLI edits)\n"
+            f"  caldb sync --to-csv  to accept DB values  (overwrites CSV edits)"
+        )
         exit_code = 3
 
     _GIT_LABELS = {
@@ -933,6 +940,76 @@ def status(ctx, file):
             click.echo(f"{label} git:  {_GIT_LABELS.get(st, st)}")
 
     ctx.exit(exit_code)
+
+
+@cli.command()
+@click.option('--file', '-f', default=None, help='CSV file (auto-detected if omitted)')
+@click.option('--name', '-n', default=None,
+              help='Filter by name or glob pattern (e.g. "FanSpd*")')
+@click.pass_context
+def diff(ctx, file, name):
+    """Show what differs between the CSV and the DB.
+
+    \b
+    Useful when 'caldb status' reports a conflict (both sides changed).
+    Displays the DB value and CSV value side by side for every parameter
+    that differs, plus parameters that exist only on one side.
+
+    \b
+    To resolve a conflict after reviewing:
+      caldb sync           -- accept CSV values (overwrites CLI edits in DB)
+      caldb sync --to-csv  -- accept DB values  (overwrites CSV edits)
+    """
+    db_path, csv_path = _resolve_pair(ctx.obj['db'], file)
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    d = db.compute_diff(csv_path)
+    db.close()
+
+    changed  = d['changed']
+    csv_only = d['added']    # in CSV, not in DB
+    db_only  = d['deleted']  # in DB, not in CSV
+
+    # Apply name filter if given
+    if name:
+        import fnmatch
+        pat = name if ('*' in name or '?' in name) else f'*{name}*'
+        changed  = [c for c in changed  if fnmatch.fnmatch(c['name'],   pat)]
+        csv_only = [p for p in csv_only if fnmatch.fnmatch(p.name,      pat)]
+        db_only  = [d for d in db_only  if fnmatch.fnmatch(d['name'],   pat)]
+
+    if not changed and not csv_only and not db_only:
+        click.echo("No differences -- CSV and DB are in sync.")
+        return
+
+    if changed:
+        click.echo(f"VALUE DIFFERS  ({len(changed)} parameter(s)):\n")
+        for c in changed:
+            click.echo(f"  {c['name']}")
+            click.echo(f"    DB:   {c['old_value']}")
+            click.echo(f"    CSV:  {c['new_value']}")
+            if (c['old_comment'] or '') != (c['new_comment'] or ''):
+                click.echo(f"    DB comment:   {c['old_comment']}")
+                click.echo(f"    CSV comment:  {c['new_comment']}")
+        click.echo()
+
+    if csv_only:
+        click.echo(f"CSV ONLY  ({len(csv_only)} parameter(s) -- not in DB):\n")
+        for p in csv_only:
+            click.echo(f"  + {p.name}  ({p.value})")
+        click.echo()
+
+    if db_only:
+        click.echo(f"DB ONLY  ({len(db_only)} parameter(s) -- not in CSV):\n")
+        for d in db_only:
+            click.echo(f"  + {d['name']}  ({d['old_value']})")
+        click.echo()
+
+    total = len(changed) + len(csv_only) + len(db_only)
+    click.echo(
+        f"Summary: {len(changed)} value conflicts, "
+        f"{len(csv_only)} CSV-only, {len(db_only)} DB-only  "
+        f"({total} total differences)"
+    )
 
 
 @cli.command()
