@@ -1,6 +1,7 @@
 import glob
 import os
 import stat
+import subprocess
 import click
 from .cal_db_util import CalibrationDatabase, CalibrationParameter
 
@@ -127,6 +128,40 @@ def _warn_if_unsynced(db_path):
             f"Warning: CSV has changed since last sync ({ts}). Run 'caldb sync' first.",
             fg='yellow', err=True,
         )
+
+
+def _git_file_status(path):
+    """Return the git working-tree status of a file.
+
+    Returns one of: 'clean', 'modified', 'staged', 'both', 'untracked',
+    or None if git is unavailable or the file is not in a repo.
+    """
+    abs_path = os.path.abspath(path)
+    try:
+        result = subprocess.run(
+            ['git', 'status', '--porcelain', abs_path],
+            capture_output=True, text=True,
+            cwd=os.path.dirname(abs_path) or '.',
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    if not output:
+        return 'clean'
+    for line in output.splitlines():
+        if len(line) >= 2:
+            x, y = line[0], line[1]
+            if x == '?' and y == '?':
+                return 'untracked'
+            if x != ' ' and y != ' ':
+                return 'both'
+            if x != ' ':
+                return 'staged'
+            if y != ' ':
+                return 'modified'
+    return 'clean'
 
 
 def _print_sync_report(added, changed, deleted, dry_run=False):
@@ -354,19 +389,150 @@ def load(ctx, file, prefix, fmt):
 
 
 @cli.command()
-@click.option('--file', '-f', default=None, help='CSV file to sync from')
+@click.option('--file', '-f', default=None, help='CSV file to sync from/to')
 @click.option('--prefix', '-p', default='CAL-', show_default=True)
-@click.option('--comment', '-c', default='', help='Comment stored with all changes')
-@click.option('--dry-run', is_flag=True, help='Show diff without writing to DB')
+@click.option('--comment', '-c', default='', help='Comment stored with all changes (CSV->DB only)')
+@click.option('--dry-run', is_flag=True, help='Show what would change without writing')
+@click.option('--to-csv', 'to_csv', is_flag=True,
+              help='Write DB changes back to CSV instead of the default CSV->DB direction')
 @click.pass_context
-def sync(ctx, file, prefix, comment, dry_run):
-    """Sync DB with CSV: detect and record additions, changes, deletions."""
-    db_path, file = _resolve_pair(ctx.obj['db'], file)
+def sync(ctx, file, prefix, comment, dry_run, to_csv):
+    """Sync DB with CSV.
+
+    \b
+    Default direction:  CSV -> DB  (record CSV edits in the database)
+    Reverse direction:  DB  -> CSV (write CLI edits back to the CSV file)
+
+    Direction is auto-detected when omitted:
+      only CSV changed  ->  CSV -> DB
+      only DB changed   ->  DB  -> CSV  (same as --to-csv)
+      both changed      ->  conflict warning, manual resolution required
+    """
+    db_path, csv_path = _resolve_pair(ctx.obj['db'], file)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    added, changed, deleted = db.sync_from_csv(
-        file, prefix=prefix, sync_comment=comment, dry_run=dry_run,
-    )
-    _print_sync_report(added, changed, deleted, dry_run=dry_run)
+
+    # Auto-detect direction unless --to-csv was given explicitly
+    if not to_csv:
+        csv_in_sync, _ = db.get_sync_status(csv_path)
+        db_changed_time = db.get_db_changed_time()
+        csv_changed = csv_in_sync is False
+        db_changed  = db_changed_time is not None
+
+        if db_changed and not csv_changed:
+            click.echo("Auto-detected: DB changed via CLI -- writing back to CSV.")
+            to_csv = True
+        elif db_changed and csv_changed:
+            click.secho(
+                "Both CSV and DB changed since last sync — conflict.\n"
+                "Use --to-csv to overwrite CSV with DB values, or edit manually.",
+                fg='yellow', err=True,
+            )
+            db.close()
+            ctx.exit(3)
+
+    if to_csv:
+        if not os.path.exists(csv_path):
+            click.echo(f"CSV not found: {csv_path}")
+            db.close()
+            ctx.exit(1)
+
+        # Git guard: warn if CSV has uncommitted changes
+        git_st = _git_file_status(csv_path)
+        if git_st in ('modified', 'both'):
+            click.secho(
+                f"Warning: {os.path.basename(csv_path)} has uncommitted changes in git.",
+                fg='yellow', err=True,
+            )
+            if not click.confirm("Overwrite anyway?", default=False):
+                db.close()
+                return
+
+        diff = db.compute_db_to_csv_diff(csv_path)
+        n_changed  = len(diff['changed'])
+        n_add      = len(diff['to_add'])
+        n_del_warn = len(diff['to_delete'])
+
+        if n_changed == 0 and n_add == 0:
+            if n_del_warn:
+                click.echo(
+                    f"Nothing to write back — {n_del_warn} CSV row(s) not in active DB "
+                    f"(soft-deleted or not yet synced)."
+                )
+            else:
+                click.echo("Nothing to write back — CSV matches DB.")
+            db.close()
+            return
+
+        tag = '[DRY RUN] ' if dry_run else ''
+        click.echo(
+            f"{tag}DB -> CSV: {n_add} to add, {n_changed} to update"
+            + (f", {n_del_warn} CSV-only row(s) left as-is" if n_del_warn else '')
+        )
+
+        if dry_run or ctx.obj['test']:
+            if diff['changed']:
+                click.echo("\nUPDATE:")
+                for ch in diff['changed']:
+                    click.echo(f"  ~ {ch['name']}:  {ch['csv_value']}  ->  {ch['db_value']}")
+            if diff['to_add']:
+                click.echo("\nADD to CSV:")
+                for r in diff['to_add']:
+                    click.echo(f"  + {r['Name']}  ({r.get('Value')})")
+            if diff['to_delete']:
+                click.echo("\nCSV-only (not in active DB — left as-is):")
+                for n in diff['to_delete']:
+                    click.echo(f"  ? {n}")
+            db.close()
+            return
+
+        # Interactive per-change confirmation
+        items = (
+            [('UPDATE', ch['name'], f"{ch['csv_value']} -> {ch['db_value']}")
+             for ch in diff['changed']] +
+            [('ADD',    r['Name'],  f"value: {r.get('Value')}")
+             for r in diff['to_add']]
+        )
+
+        accepted = set()
+        accept_all = False
+        click.echo("\nConfirm each change  (y=yes  n=skip  a=accept all  q=quit):\n")
+        for ctype, name, detail in items:
+            if accept_all:
+                accepted.add(name)
+                continue
+            click.echo(f"  {ctype:6s}  {name}  ({detail})")
+            raw = click.prompt("  ", default='y', show_default=False,
+                               prompt_suffix='[y/n/a/q] > ').strip().lower()
+            if raw == 'q':
+                break
+            if raw == 'a':
+                accept_all = True
+                accepted.add(name)
+            elif raw in ('y', ''):
+                accepted.add(name)
+
+        if not accepted:
+            click.echo("\nNothing accepted — CSV unchanged.")
+            db.close()
+            return
+
+        diff['changed'] = [ch for ch in diff['changed'] if ch['name'] in accepted]
+        diff['to_add']  = [r  for r  in diff['to_add']  if r['Name']  in accepted]
+
+        db.write_back_to_csv(csv_path, diff)
+        db.store_csv_hash(csv_path)
+        click.echo(
+            f"\nWrote back: {len(diff['to_add'])} added, "
+            f"{len(diff['changed'])} updated -> {os.path.basename(csv_path)}"
+        )
+
+    else:
+        # Default: CSV -> DB
+        added, changed, deleted = db.sync_from_csv(
+            csv_path, prefix=prefix, sync_comment=comment, dry_run=dry_run,
+        )
+        _print_sync_report(added, changed, deleted, dry_run=dry_run)
+
     db.close()
 
 
@@ -505,24 +671,35 @@ def status(ctx, file):
     if ts is None and csv_in_sync is None:
         click.echo("Never synced -- run 'caldb sync' to initialise.")
         ctx.exit(4)
-        return
 
     csv_changed = csv_in_sync is False
     db_changed  = db_changed_time is not None
 
     if not csv_changed and not db_changed:
         click.echo(f"In sync  (last sync: {ts})")
-        ctx.exit(0)
+        exit_code = 0
     elif csv_changed and not db_changed:
         click.echo(f"CSV changed since last sync ({ts}) -- run 'caldb sync'")
-        ctx.exit(1)
+        exit_code = 1
     elif not csv_changed and db_changed:
         dts = db_changed_time[:19].replace('T', ' ')
         click.echo(f"DB changed via CLI ({dts}) -- run 'caldb sync --to-csv'")
-        ctx.exit(2)
+        exit_code = 2
     else:
         click.echo(f"Both CSV and DB changed since last sync ({ts}) -- conflict, resolve manually")
-        ctx.exit(3)
+        exit_code = 3
+
+    git_st = _git_file_status(csv_path)
+    _GIT_LABELS = {
+        'modified':  'modified (not staged)',
+        'staged':    'staged for commit',
+        'both':      'modified and staged',
+        'untracked': 'untracked',
+    }
+    if git_st and git_st != 'clean':
+        click.echo(f"CSV git:  {_GIT_LABELS.get(git_st, git_st)}")
+
+    ctx.exit(exit_code)
 
 
 @cli.command()

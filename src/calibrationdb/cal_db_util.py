@@ -631,6 +631,118 @@ class CalibrationDatabase:
             return None, last_sync_time
         return current_hash == stored_hash, last_sync_time
 
+    def compute_db_to_csv_diff(self, csv_path):
+        """Compute changes needed to bring the CSV in sync with the current DB.
+
+        Returns:
+          fieldnames:  list of CSV column headers (preserves format)
+          multicol:    True if multi-column format was detected
+          changed:     [{'name', 'csv_value', 'db_value',
+                          'csv_comment', 'db_comment', 'db_row'}, ...]
+          to_add:      [db_row_dict, ...]  (active in DB, absent from CSV)
+          to_delete:   [name, ...]          (in CSV, absent from active DB)
+        """
+        fieldnames = []
+        multicol = False
+        csv_params = {}
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames or [])
+            multicol = 'Value_1' in fieldnames
+            for row in reader:
+                parse = _parse_multicol_row if multicol else _parse_standard_row
+                p = parse(row)
+                if p.name:
+                    csv_params[p.name] = p
+
+        db_params = self._get_all_active()
+
+        changed = []
+        for name, p in csv_params.items():
+            if name in db_params:
+                db_row = db_params[name]
+                v_diff = _normalise_value(db_row.get('Value')) != _normalise_value(p.value)
+                c_diff = (db_row.get('COMMENT') or '') != (p.comment or '')
+                if v_diff or c_diff:
+                    changed.append({
+                        'name': name,
+                        'csv_value': p.value,
+                        'db_value': db_row.get('Value'),
+                        'csv_comment': p.comment,
+                        'db_comment': db_row.get('COMMENT'),
+                        'db_row': db_row,
+                    })
+
+        to_add = [db_params[n] for n in db_params if n not in csv_params]
+        to_delete = [n for n in csv_params if n not in db_params]
+
+        return {
+            'fieldnames': fieldnames,
+            'multicol': multicol,
+            'changed': changed,
+            'to_add': to_add,
+            'to_delete': to_delete,
+        }
+
+    def write_back_to_csv(self, csv_path, diff):
+        """Rewrite csv_path to match the DB state described by diff.
+
+        Updates values/comments for changed rows; appends rows for to_add.
+        Rows in to_delete are left as-is (reported but not removed).
+        Values are canonicalised on write.
+        """
+        fieldnames     = diff['fieldnames']
+        multicol       = diff['multicol']
+        name_to_change = {ch['name']: ch for ch in diff['changed']}
+
+        rows = []
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(dict(row))
+
+        for row in rows:
+            name = row.get('Name', '').strip()
+            if name not in name_to_change:
+                continue
+            ch = name_to_change[name]
+            canonical = _canonicalise_value(ch['db_value'])
+            if multicol:
+                for col in _VALUE_COLS:
+                    row[col] = ''
+                for i, part in enumerate(canonical.split()[:10]):
+                    row[f'Value_{i + 1}'] = part
+            else:
+                elems = canonical.split()
+                row['Value'] = ('[' + ' '.join(elems) + ']') if len(elems) > 1 else canonical
+            if 'COMMENT' in row:
+                row['COMMENT'] = ch['db_comment'] or ''
+
+        for db_row in diff['to_add']:
+            new_row = {f: '' for f in fieldnames}
+            new_row['Name'] = db_row['Name']
+            canonical = _canonicalise_value(db_row.get('Value') or '')
+            if multicol:
+                for i, part in enumerate(canonical.split()[:10]):
+                    new_row[f'Value_{i + 1}'] = part
+            else:
+                elems = canonical.split()
+                new_row['Value'] = ('[' + ' '.join(elems) + ']') if len(elems) > 1 else canonical
+            new_row['COMMENT']     = db_row.get('COMMENT') or ''
+            new_row['DataType']    = db_row.get('DataType') or ''
+            new_row['Unit']        = db_row.get('Unit') or ''
+            new_row['Size']        = db_row.get('Size') or ''
+            mn, mx = db_row.get('Min'), db_row.get('Max')
+            new_row['Min'] = '' if mn is None else (str(int(mn)) if mn == int(mn) else str(mn))
+            new_row['Max'] = '' if mx is None else (str(int(mx)) if mx == int(mx) else str(mx))
+            new_row['Description'] = db_row.get('Description') or ''
+            rows.append(new_row)
+
+        with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(rows)
+
     # ------------------------------------------------------------------
     # History log
     # ------------------------------------------------------------------

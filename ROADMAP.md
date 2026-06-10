@@ -4,7 +4,7 @@
 
 **Phase A — Quick wins** (done): `status`, `changes --since`, DB-changed flag
 **Phase B — Safety building block** (done): `validate` command + wire into add/update/sync/review
-**Phase C — Core workflow gap**: Bidirectional sync (DB → CSV write-back)
+**Phase C — Core workflow gap** (done): Bidirectional sync (DB → CSV write-back)
 **Deferred**: `tag`/`restore`, `stats`, `search`, `diff`/`merge`, export format, completions
 
 ---
