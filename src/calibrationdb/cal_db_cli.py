@@ -728,6 +728,127 @@ def tags(ctx):
 
 
 @cli.command()
+@click.option('--name', '-n', default=None,
+              help='Parameter name or glob pattern (omit to restore all parameters at --at tag)')
+@click.option('--at', default=None, metavar='TAG',
+              help='Restore to values as they were at this tag (see: caldb tags)')
+@click.option('--comment', '-c', default='',
+              help='Comment stored with each restore history entry')
+@click.option('--dry-run', is_flag=True, help='Show what would change without writing')
+@click.pass_context
+def restore(ctx, name, at, comment, dry_run):
+    """Revert parameter values to a previous state.
+
+    \b
+    Examples:
+      caldb restore -n TempCtlSetPnt           # revert to value before last change
+      caldb restore -n TempCtlSetPnt --at v1.2 # revert one param to a tag
+      caldb restore --at v1.2                  # revert all params to a tag
+      caldb restore --at v1.2 -n "FanSpd*"    # revert matching params to a tag
+      caldb restore --at v1.2 --dry-run        # preview without writing
+
+    Each restore is recorded as a 'restore' history entry so the rollback
+    is fully traceable in 'caldb log' and 'caldb changes'.
+    """
+    if not at and not name:
+        raise click.UsageError("Provide --name (-n) and/or --at <tag>.")
+    if not at and name and ('*' in name or '?' in name):
+        raise click.UsageError("Glob patterns require --at <tag>.")
+
+    db_path = _resolve_db(ctx.obj['db'])
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+
+    if at:
+        tag_time, diff = db.compute_restore_diff(at, pattern=name)
+        if tag_time is None:
+            click.echo(f"Tag '{at}' not found.  Use 'caldb tags' to list available tags.")
+            db.close()
+            return
+        if not diff:
+            click.echo(f"All parameters already match tag '{at}' -- nothing to restore.")
+            db.close()
+            return
+
+        ts = tag_time[:19].replace('T', ' ')
+        tag = '[DRY RUN] ' if dry_run else ''
+        click.echo(
+            f"{tag}Restore to tag '{at}'  ({ts}):  "
+            f"{len(diff)} parameter(s) would change\n"
+        )
+
+        if dry_run or ctx.obj['test']:
+            for item in diff:
+                click.echo(f"  ~ {item['name']}:  {item['current']}  ->  {item['target']}")
+            db.close()
+            return
+
+        accepted = set()
+        accept_all = False
+        click.echo("Confirm each restore  (y=yes  n=skip  a=accept all  q=quit):\n")
+        for item in diff:
+            if accept_all:
+                accepted.add(item['name'])
+                continue
+            click.echo(f"  {item['name']}:  {item['current']}  ->  {item['target']}")
+            raw = click.prompt("  ", default='y', show_default=False,
+                               prompt_suffix='[y/n/a/q] > ').strip().lower()
+            if raw == 'q':
+                break
+            if raw == 'a':
+                accept_all = True
+                accepted.add(item['name'])
+            elif raw in ('y', ''):
+                accepted.add(item['name'])
+
+        if not accepted:
+            click.echo("Nothing accepted -- no changes made.")
+            db.close()
+            return
+
+        restore_msg = comment or f"restore to tag '{at}'"
+        count = 0
+        for item in diff:
+            if item['name'] not in accepted:
+                continue
+            ok = db.restore_parameter(
+                item['name'], item['target'],
+                to_comment=item['target_comment'],
+                restore_comment=restore_msg,
+            )
+            if ok:
+                click.echo(f"  Restored: {item['name']}  {item['current']} -> {item['target']}")
+                count += 1
+
+        click.echo(f"\n{count} parameter(s) restored.")
+
+    else:
+        # Single parameter, no tag — revert to value before last change
+        entries = db.get_parameter_log(name, limit=1)
+        if not entries or entries[0].get('OldValue') is None:
+            click.echo(f"No previous value to restore for '{name}'.")
+            db.close()
+            return
+
+        prev_value = entries[0]['OldValue']
+        current_rows = db.get_parameters(name)
+        current_value = current_rows[0]['Value'] if current_rows else '?'
+
+        if dry_run or ctx.obj['test']:
+            click.echo(f"Would restore: {name}  {current_value}  ->  {prev_value}")
+            db.close()
+            return
+
+        restore_msg = comment or 'restore to previous value'
+        ok = db.restore_to_previous(name, restore_comment=restore_msg)
+        if ok:
+            click.echo(f"Restored: {name}  {current_value} -> {prev_value}")
+        else:
+            click.echo(f"Nothing to restore for '{name}'.")
+
+    db.close()
+
+
+@cli.command()
 @click.option('--name', '-n', required=True, help='Parameter name')
 @click.option('--limit', '-l', default=20, show_default=True, help='Max entries to show')
 @click.pass_context
@@ -747,7 +868,7 @@ def log(ctx, name, limit):
         ctype = e['ChangeType'].upper()
         sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
         click.echo(f"  {ts}  {ctype}{sc}")
-        if ctype == 'UPDATE':
+        if ctype in ('UPDATE', 'RESTORE'):
             click.echo(f"    value:   {e['OldValue']}  ->  {e['NewValue']}")
             if (e['OldComment'] or '') != (e['NewComment'] or ''):
                 click.echo(f"    comment: {e['OldComment']}  ->  {e['NewComment']}")
@@ -818,7 +939,7 @@ def status(ctx, file):
 @click.option('-n', '--count', default=10, show_default=True,
               help='Number of entries to show (0 = all)')
 @click.option('--type', '-t', 'change_type',
-              type=click.Choice(['add', 'update', 'delete'], case_sensitive=False),
+              type=click.Choice(['add', 'update', 'delete', 'restore'], case_sensitive=False),
               default=None, help='Filter by change type')
 @click.option('--since', '-s', default=None,
               help='Show changes on or after a date (2026-06-01) or sync comment')
@@ -859,7 +980,7 @@ def changes(ctx, count, change_type, since, compact):
             ts = e['ChangeDateTime'][:19].replace('T', ' ')
             ctype = e['ChangeType'].upper()
             sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
-            if ctype == 'UPDATE':
+            if ctype in ('UPDATE', 'RESTORE'):
                 detail = f"  {e['OldValue']} -> {e['NewValue']}"
             elif ctype == 'ADD':
                 detail = f"  {e['NewValue']}"
@@ -877,7 +998,7 @@ def changes(ctx, count, change_type, since, compact):
         ctype = e['ChangeType'].upper()
         sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
         click.echo(f"  {ts}  {ctype:6s}  {e['Name']}{sc}")
-        if ctype == 'UPDATE':
+        if ctype in ('UPDATE', 'RESTORE'):
             click.echo(f"           value:   {e['OldValue']}  ->  {e['NewValue']}")
             if (e['OldComment'] or '') != (e['NewComment'] or ''):
                 click.echo(f"           comment: {e['OldComment']}  ->  {e['NewComment']}")

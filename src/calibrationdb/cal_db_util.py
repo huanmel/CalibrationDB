@@ -217,6 +217,86 @@ class CalibrationDatabase:
               old_comment, new_comment,
               datetime.now().isoformat(), sync_comment))
 
+    # ------------------------------------------------------------------
+    # Restore
+    # ------------------------------------------------------------------
+
+    def restore_parameter(self, name, to_value, to_comment=None, restore_comment=''):
+        """Set a parameter's value to to_value and record a 'restore' history entry.
+
+        to_comment  - the comment to store on the parameter row; if None the
+                      existing comment is kept unchanged.
+        Returns True if the value was changed, False if it was already equal.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            'SELECT Value, COMMENT FROM calibration'
+            ' WHERE Name = ? AND (Deleted = 0 OR Deleted IS NULL)',
+            (name,),
+        )
+        row = cur.fetchone()
+        if not row:
+            print(f"  '{name}': not found or deleted.")
+            return False
+        old_value, old_comment = row
+        if _normalise_value(old_value) == _normalise_value(to_value):
+            return False
+        new_comment = to_comment if to_comment is not None else old_comment
+        self._insert_history(cur, name, 'restore',
+                             old_value=old_value, new_value=to_value,
+                             old_comment=old_comment, new_comment=new_comment,
+                             sync_comment=restore_comment)
+        cur.execute('''
+            UPDATE calibration
+            SET Value = ?, COMMENT = ?, ModifiedDateTime = ?, ModificationComment = ?
+            WHERE Name = ?
+        ''', (to_value, new_comment, datetime.now().isoformat(), restore_comment, name))
+        self._set_db_changed(cur)
+        self.conn.commit()
+        return True
+
+    def restore_to_previous(self, name, restore_comment=''):
+        """Restore a parameter to the value it had before its last change.
+
+        Returns True if restored, False if no previous value exists.
+        """
+        cur = self.conn.cursor()
+        cur.execute('''
+            SELECT OldValue, OldComment FROM calibration_history
+            WHERE Name = ? AND OldValue IS NOT NULL
+            ORDER BY id DESC LIMIT 1
+        ''', (name,))
+        row = cur.fetchone()
+        if not row:
+            print(f"  '{name}': no previous value found.")
+            return False
+        return self.restore_parameter(name, row[0], row[1], restore_comment)
+
+    def compute_restore_diff(self, tag_name, pattern=None):
+        """Return parameters that differ between current DB state and a tag.
+
+        Returns (tag_time_str, diff_list) or (None, None) if the tag doesn't exist.
+        diff_list entries: {'name', 'current', 'target', 'target_comment'}
+        Parameters deleted since the tag are skipped.
+        """
+        tag_time, tag_rows = self.get_parameters_at_tag(tag_name, pattern=pattern)
+        if tag_time is None or tag_rows is None:
+            return None, None
+        current = {r['Name']: r for r in self.get_parameters(pattern)}
+        diff = []
+        for row in tag_rows:
+            name = row['Name']
+            if name not in current:
+                continue  # deleted since the tag; skip
+            if _normalise_value(current[name]['Value']) != _normalise_value(row['Value']):
+                diff.append({
+                    'name': name,
+                    'current': current[name]['Value'],
+                    'target': row['Value'],
+                    'target_comment': row.get('COMMENT'),
+                })
+        return tag_time, diff
+
     def validate_parameters(self, pattern=None):
         """Validate active parameters against their Min/Max/DataType/Size constraints.
 
