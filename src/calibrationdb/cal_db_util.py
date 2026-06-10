@@ -251,6 +251,44 @@ class CalibrationDatabase:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def search_parameters(self, name=None, description=None,
+                          datatype=None, unit=None, source=None):
+        """Search active parameters across multiple fields (all filters are AND-ed).
+
+        Each filter is a glob pattern (* and ? supported) or a plain substring.
+        Returns a list of row dicts sorted by Name.
+        """
+        cur = self.conn.cursor()
+        clauses = ['(Deleted = 0 OR Deleted IS NULL)']
+        args = []
+
+        def _add(col, val):
+            if val is None:
+                return
+            if '*' in val or '?' in val:
+                pat = val.replace('*', '%').replace('?', '_')
+                clauses.append(f'{col} LIKE ?')
+            else:
+                pat = f'%{val}%'
+                clauses.append(f'{col} LIKE ?')
+            args.append(pat)
+
+        _add('Name',        name)
+        _add('Description', description)
+        _add('DataType',    datatype)
+        _add('Unit',        unit)
+        _add('Source',      source)
+
+        sql = '''
+            SELECT MID, UID, Name, Value, COMMENT, DataType, Unit, Size,
+                   Min, Max, Description, ALIASES, ModifiedDateTime,
+                   ModificationComment, Who, Users, Source
+            FROM calibration
+            WHERE ''' + ' AND '.join(clauses) + ' ORDER BY Name'
+        cur.execute(sql, args)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     def _get_all_active(self):
         """Return {name: row_dict} for all non-deleted parameters."""
         cur = self.conn.cursor()

@@ -623,6 +623,74 @@ def show(ctx, name, compact):
 
 
 @cli.command()
+@click.option('--name', '-n', default=None,
+              help='Name glob pattern (e.g. "*derate*")')
+@click.option('--description', '-D', default=None,
+              help='Description contains or glob pattern')
+@click.option('--datatype', '-t', default=None,
+              help='DataType contains or glob (e.g. "uint8")')
+@click.option('--unit', '-u', default=None,
+              help='Unit contains or glob (e.g. "rpm")')
+@click.option('--source', '-s', default=None,
+              help='Source contains or glob (e.g. "App/Fan*")')
+@click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
+@click.pass_context
+def search(ctx, name, description, datatype, unit, source, compact):
+    """Search parameters by description, datatype, unit, source, or name.
+
+    \b
+    All filters are AND-ed. Plain strings match as substrings;
+    * and ? work as wildcards.
+
+    \b
+    Examples:
+      caldb search -D "derate"
+      caldb search -D "*temp*" -t uint8
+      caldb search -s "App/FanCtl"
+      caldb search -u "rpm" -c
+    """
+    if not any([name, description, datatype, unit, source]):
+        raise click.UsageError("Provide at least one filter (-n, -D, -t, -u, -s).")
+    db_path = _resolve_db(ctx.obj['db'])
+    _warn_if_unsynced(db_path)
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    rows = db.search_parameters(
+        name=name, description=description,
+        datatype=datatype, unit=unit, source=source,
+    )
+    db.close()
+
+    if not rows:
+        click.echo("No parameters match the given filters.")
+        return
+
+    if compact:
+        for r in rows:
+            click.echo(f"{r['Name']}={r['Value']}")
+        return
+
+    for r in rows:
+        click.echo(f"{r['Name']}")
+        click.echo(f"  value:    {r['Value']}")
+        parts = []
+        if r.get('DataType'): parts.append(r['DataType'])
+        if r.get('Unit'):     parts.append(r['Unit'])
+        if r.get('Size'):     parts.append(f"size={r['Size']}")
+        if parts:
+            click.echo(f"  type:     {', '.join(parts)}")
+        if r.get('Min') is not None or r.get('Max') is not None:
+            click.echo(f"  range:    {r['Min']} .. {r['Max']}")
+        if r.get('Description'):
+            click.echo(f"  desc:     {r['Description']}")
+        if r.get('COMMENT'):
+            click.echo(f"  comment:  {r['COMMENT']}")
+        if r.get('Who') or r.get('Source'):
+            who_src = '  /  '.join(x for x in [r.get('Who'), r.get('Source')] if x)
+            click.echo(f"  who/src:  {who_src}")
+        click.echo()
+
+
+@cli.command()
 @click.option('--name', '-n', required=True, help='Parameter name')
 @click.option('--limit', '-l', default=20, show_default=True, help='Max entries to show')
 @click.pass_context
