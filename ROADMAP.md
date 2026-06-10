@@ -1,5 +1,14 @@
 # CalibrationDB — Roadmap
 
+## Implementation order
+
+**Phase A — Quick wins** (done): `status`, `changes --since`, DB-changed flag
+**Phase B — Safety building block**: `validate` command + wire into add/update/sync/review
+**Phase C — Core workflow gap**: Bidirectional sync (DB → CSV write-back)
+**Deferred**: `tag`/`restore`, `stats`, `search`, `diff`/`merge`, export format, completions
+
+---
+
 ## What exists today (v0.1, June 2026)
 
 | Command                    | Purpose                                           |
@@ -19,6 +28,48 @@ Core internals: two CSV formats auto-detected, SHA-256 sync guard, soft delete, 
 ---
 
 ## Tier 1 — Quick wins (small, high value)
+
+### 0. Bidirectional sync — DB → CSV write-back
+
+Currently `sync` only goes CSV → DB. When parameters are edited directly via CLI
+(`add`, `update`, `rename`), the CSV falls behind. This adds the reverse direction
+and makes the overall sync smarter about which side is ahead.
+
+**Pre-sync summary** — before any write, show a one-line status for each side:
+```
+DB   last changed: 2026-06-09 10:14  (2 CLI edits since last sync)
+CSV  last changed: 2026-06-09 09:55  (matches last sync)
+Direction: DB -> CSV  (auto-detected)
+```
+
+**Direction detection:**
+
+- If only CSV changed → CSV → DB (current behaviour)
+- If only DB changed (via CLI) → DB → CSV write-back
+- If both changed → warn of a conflict, require `--direction csv` or `--direction db`
+  to resolve, or use `review` to handle per-parameter
+
+**DB → CSV write-back with confirmation:**
+
+```bash
+caldb sync --to-csv          # explicit reverse direction
+caldb sync                   # auto-detects direction as above
+```
+
+Per-parameter prompt: `y` accept / `n` skip / `a` accept all / `q` quit.
+
+**Git status guard** — before writing the CSV, check `git status` on that file:
+
+- If the CSV has uncommitted changes that differ from the last sync, warn the user
+  so they don't accidentally overwrite in-progress edits
+- If the CSV is untracked or not in a git repo, skip silently
+
+**Normalisation on write** — collapse double spaces, strip stray brackets, and
+apply canonical value format so the CSV stays clean after write-back.
+
+**Tracking:** a DB-changed flag (set whenever `add`/`update`/`rename`/`delete`
+runs) is stored in `_caldb_meta` alongside the existing CSV hash, giving `status`
+enough information to report which side is ahead.
 
 ### 1. `status` command
 Single-line sync check with a scriptable exit code.

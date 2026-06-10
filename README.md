@@ -142,6 +142,25 @@ caldb [--db FILE] [--test] COMMAND [OPTIONS]
 
 ---
 
+### `status` — check sync state between DB and CSV
+
+```bash
+caldb status
+```
+
+Output:
+```
+In sync  (last sync: 2026-06-09 10:14)
+CSV changed since last sync (2026-06-09 10:14) -- run 'caldb sync'
+DB changed via CLI (2026-06-09 10:22) -- run 'caldb sync --to-csv'
+Both CSV and DB changed since last sync -- conflict, resolve manually
+```
+
+Exit codes: `0` in sync · `1` CSV ahead · `2` DB ahead · `3` conflict · `4` never synced.
+Useful in shell scripts: `caldb status || caldb sync`.
+
+---
+
 ### `sync` — diff CSV → DB and record all changes
 
 ```bash
@@ -224,11 +243,13 @@ FanSpdReqMin=20
 ### `changes` — recent changes across all parameters
 
 ```bash
-caldb changes                  # last 10 (default)
-caldb changes -n 25            # last 25
-caldb changes -n 0             # all
-caldb changes -t update        # filter: add | update | delete
-caldb changes -c               # compact: one line per change
+caldb changes                        # last 10 (default)
+caldb changes -n 25                  # last 25
+caldb changes -n 0                   # all
+caldb changes -t update              # filter: add | update | delete
+caldb changes -s 2026-06-01          # on or after a date
+caldb changes -s "sprint 4 tuning"   # on or after a named sync session
+caldb changes -c                     # compact: one line per change
 ```
 
 Detailed output:

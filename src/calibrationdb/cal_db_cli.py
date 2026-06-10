@@ -456,14 +456,61 @@ def log(ctx, name, limit):
 
 
 @cli.command()
+@click.option('--file', '-f', default=None, help='CSV file (auto-detected if omitted)')
+@click.pass_context
+def status(ctx, file):
+    """Show sync status between DB and CSV.
+
+    \b
+    Exit codes:
+      0  in sync
+      1  CSV changed since last sync  (run: caldb sync)
+      2  DB changed via CLI since last sync  (run: caldb sync --to-csv)
+      3  both changed -- conflict
+      4  never synced
+    """
+    db_path, csv_path = _resolve_pair(ctx.obj['db'], file)
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+    csv_in_sync, last_sync_time = db.get_sync_status(csv_path)
+    db_changed_time = db.get_db_changed_time()
+    db.close()
+
+    ts = last_sync_time[:19].replace('T', ' ') if last_sync_time else None
+
+    if ts is None and csv_in_sync is None:
+        click.echo("Never synced -- run 'caldb sync' to initialise.")
+        ctx.exit(4)
+        return
+
+    csv_changed = csv_in_sync is False
+    db_changed  = db_changed_time is not None
+
+    if not csv_changed and not db_changed:
+        click.echo(f"In sync  (last sync: {ts})")
+        ctx.exit(0)
+    elif csv_changed and not db_changed:
+        click.echo(f"CSV changed since last sync ({ts}) -- run 'caldb sync'")
+        ctx.exit(1)
+    elif not csv_changed and db_changed:
+        dts = db_changed_time[:19].replace('T', ' ')
+        click.echo(f"DB changed via CLI ({dts}) -- run 'caldb sync --to-csv'")
+        ctx.exit(2)
+    else:
+        click.echo(f"Both CSV and DB changed since last sync ({ts}) -- conflict, resolve manually")
+        ctx.exit(3)
+
+
+@cli.command()
 @click.option('-n', '--count', default=10, show_default=True,
               help='Number of entries to show (0 = all)')
 @click.option('--type', '-t', 'change_type',
               type=click.Choice(['add', 'update', 'delete'], case_sensitive=False),
               default=None, help='Filter by change type')
+@click.option('--since', '-s', default=None,
+              help='Show changes on or after a date (2026-06-01) or sync comment')
 @click.option('--compact', '-c', is_flag=True, help='One line per change')
 @click.pass_context
-def changes(ctx, count, change_type, compact):
+def changes(ctx, count, change_type, since, compact):
     """Show recent changes across all parameters.
 
     \b
@@ -472,13 +519,19 @@ def changes(ctx, count, change_type, compact):
       caldb changes -n 25        # last 25
       caldb changes -n 0         # all
       caldb changes -t update    # only value changes
+      caldb changes -s 2026-06-01
+      caldb changes -s "sprint 4 tuning"
       caldb changes -c           # compact, one line per change
     """
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    entries = db.get_recent_changes(limit=count)
+    entries = db.get_recent_changes(limit=count, since=since)
     db.close()
+
+    if since and not entries:
+        click.echo(f"No changes found matching --since '{since}'.")
+        return
 
     if change_type:
         entries = [e for e in entries if e['ChangeType'].lower() == change_type.lower()]

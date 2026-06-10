@@ -147,6 +147,13 @@ class CalibrationDatabase:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _set_db_changed(self, cur):
+        """Record that the DB was modified via CLI since last sync."""
+        cur.execute(
+            "INSERT OR REPLACE INTO _caldb_meta (key, value) VALUES ('db_changed', ?)",
+            (datetime.now().isoformat(),),
+        )
+
     def _insert_history(self, cur, name, change_type,
                         old_value=None, new_value=None,
                         old_comment=None, new_comment=None,
@@ -231,6 +238,7 @@ class CalibrationDatabase:
             self._insert_history(cur, param.name, 'add',
                                  new_value=param.value, new_comment=param.comment,
                                  sync_comment=param.mod_comment)
+            self._set_db_changed(cur)
             if self.test_mode:
                 self.conn.rollback()
             else:
@@ -273,6 +281,7 @@ class CalibrationDatabase:
         self._insert_history(cur, param.name, 'update',
                              old_value=old_value, new_value=value,
                              sync_comment=param.mod_comment)
+        self._set_db_changed(cur)
 
         if self.test_mode:
             self.conn.rollback()
@@ -305,6 +314,7 @@ class CalibrationDatabase:
             SET Name = ?, ALIASES = ?, ModifiedDateTime = ?, ModificationComment = ?
             WHERE MID = ?
         ''', (new_name, aliases, datetime.now().isoformat(), mod_comment, r['MID']))
+        self._set_db_changed(cur)
         if self.test_mode:
             self.conn.rollback()
         else:
@@ -326,6 +336,7 @@ class CalibrationDatabase:
         cur.execute('''
             UPDATE calibration SET Deleted = 1, ModifiedDateTime = ? WHERE Name = ?
         ''', (datetime.now().isoformat(), name))
+        self._set_db_changed(cur)
         if self.test_mode:
             self.conn.rollback()
         else:
@@ -512,7 +523,15 @@ class CalibrationDatabase:
                 'INSERT OR REPLACE INTO _caldb_meta (key, value) VALUES (?, ?)',
                 (key, val),
             )
+        cur.execute("DELETE FROM _caldb_meta WHERE key = 'db_changed'")
         self.conn.commit()
+
+    def get_db_changed_time(self):
+        """Return ISO timestamp of last CLI write since sync, or None if in sync."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT value FROM _caldb_meta WHERE key = 'db_changed'")
+        row = cur.fetchone()
+        return row[0] if row else None
 
     def get_sync_status(self, csv_path):
         """Compare csv_path's current content against the stored hash.
@@ -556,24 +575,37 @@ class CalibrationDatabase:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    def get_recent_changes(self, limit=10):
-        """Return recent changes across all parameters, newest first. 0 = all."""
+    def get_recent_changes(self, limit=10, since=None):
+        """Return recent changes across all parameters, newest first.
+
+        limit  0 = all entries
+        since  ISO date string  e.g. '2026-06-01'  -> ChangeDateTime >= that date
+               sync comment str e.g. 'sprint 4'    -> on or after that sync session
+        """
         cur = self.conn.cursor()
-        if limit == 0:
-            cur.execute('''
-                SELECT Name, ChangeType, OldValue, NewValue, OldComment, NewComment,
-                       ChangeDateTime, SyncComment
-                FROM calibration_history
-                ORDER BY id DESC
-            ''')
-        else:
-            cur.execute('''
-                SELECT Name, ChangeType, OldValue, NewValue, OldComment, NewComment,
-                       ChangeDateTime, SyncComment
-                FROM calibration_history
-                ORDER BY id DESC
-                LIMIT ?
-            ''', (limit,))
+        since_dt = None
+        if since:
+            if since[:4].isdigit() and '-' in since:
+                since_dt = since  # treat as date/datetime prefix
+            else:
+                cur.execute(
+                    "SELECT MIN(ChangeDateTime) FROM calibration_history WHERE SyncComment = ?",
+                    (since,),
+                )
+                row = cur.fetchone()
+                since_dt = row[0] if row and row[0] else None
+
+        base = '''
+            SELECT Name, ChangeType, OldValue, NewValue, OldComment, NewComment,
+                   ChangeDateTime, SyncComment
+            FROM calibration_history
+        '''
+        where = 'WHERE ChangeDateTime >= ? ' if since_dt else ''
+        order = 'ORDER BY id DESC'
+        limit_clause = '' if limit == 0 else f'LIMIT {int(limit)}'
+
+        args = (since_dt,) if since_dt else ()
+        cur.execute(f'{base} {where} {order} {limit_clause}', args)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
