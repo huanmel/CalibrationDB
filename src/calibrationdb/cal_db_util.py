@@ -737,11 +737,10 @@ class CalibrationDatabase:
     # Tags
     # ------------------------------------------------------------------
 
-    def tag_snapshot(self, name, comment=''):
-        """Create a named tag at the current point in time.
+    def tag_snapshot(self, name, comment='', at=None):
+        """Create a named tag at a point in time.
 
-        The tag records the current datetime so that parameter values
-        can be queried as they were at that moment via get_parameters_at_tag.
+        at -- ISO datetime string to backdate the tag; defaults to now.
         Returns False (and prints a warning) if the tag name already exists.
         """
         cur = self.conn.cursor()
@@ -749,13 +748,14 @@ class CalibrationDatabase:
         if cur.fetchone():
             print(f"Tag '{name}' already exists.")
             return False
-        dt = datetime.now().isoformat()
+        dt = at if at else datetime.now().isoformat()
         cur.execute(
             "INSERT INTO _caldb_tags (name, ChangeDateTime, comment) VALUES (?, ?, ?)",
             (name, dt, comment),
         )
         self.conn.commit()
-        print(f"Tagged: {name}  ({dt[:19].replace('T', ' ')})")
+        backdated = '  (backdated)' if at else ''
+        print(f"Tagged: {name}  ({dt[:19].replace('T', ' ')}){backdated}")
         return True
 
     def list_tags(self):

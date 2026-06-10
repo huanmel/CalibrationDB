@@ -692,20 +692,28 @@ def search(ctx, name, description, datatype, unit, source, compact):
 @cli.command()
 @click.option('--name', '-n', required=True, help='Tag name (e.g. v1.2, sprint-5)')
 @click.option('--message', '-m', default='', help='Short description of this snapshot')
+@click.option('--at', default=None, metavar='DATETIME',
+              help='Backdate tag to this point, e.g. "2026-06-08 14:06:47"')
 @click.pass_context
-def tag(ctx, name, message):
+def tag(ctx, name, message, at):
     """Create a named snapshot tag at the current point in history.
+
+    Use --at to place the tag at a historical datetime (e.g. from 'caldb changes -c').
 
     \b
     Examples:
       caldb tag -n v1.2 -m "sprint 5 release candidate"
       caldb tag -n pre-tuning
-
-    Use 'caldb tags' to list tags and 'caldb show --at <tag>' to query them.
+      caldb tag -n v12.3 --at "2026-06-08 14:06:47"
     """
     db_path = _resolve_db(ctx.obj['db'])
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    db.tag_snapshot(name, message)
+    if at:
+        # Normalise "YYYY-MM-DD HH:MM:SS" -> ISO with T separator for storage
+        at_iso = at.strip().replace(' ', 'T')
+        db.tag_snapshot(name, message, at=at_iso)
+    else:
+        db.tag_snapshot(name, message)
     db.close()
 
 
