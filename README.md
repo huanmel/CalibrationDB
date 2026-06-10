@@ -38,6 +38,9 @@ parameter individually — who changed what value, when, and why.
 - **CLI with short flags** — `-n`, `-f`, `-c`, `-p`, … for quick use in a terminal
 - **Soft delete** — removed parameters stay in history
 - **Stale-DB warning** — any command that reads or edits the DB checks whether the CSV has changed since the last sync and warns if it has
+- **Bidirectional sync** — `caldb sync --to-csv` writes CLI edits back to the CSV; direction is auto-detected
+- **Snapshot tags** — `caldb tag -n v1.2` marks a point in time; `caldb show --at v1.2` queries any parameter's value at that point
+- **Search** — `caldb search -D "timeout"` finds parameters by description, datatype, unit, or source
 - **No server, no dependencies** beyond `click` — single SQLite file alongside your CSV
 
 ## Installation
@@ -178,12 +181,19 @@ DB changed via CLI (2026-06-09 10:22) -- run 'caldb sync --to-csv'
 Both CSV and DB changed since last sync -- conflict, resolve manually
 ```
 
+When either file has uncommitted git changes, extra lines are appended:
+
+```text
+CSV git:  modified (not staged)
+DB  git:  staged for commit
+```
+
 Exit codes: `0` in sync · `1` CSV ahead · `2` DB ahead · `3` conflict · `4` never synced.
 Useful in shell scripts: `caldb status || caldb sync`.
 
 ---
 
-### `sync` — diff CSV → DB and record all changes
+### `sync` — synchronise CSV and DB in either direction
 
 ```bash
 caldb sync                          # auto-detect pair, no comment
@@ -193,15 +203,47 @@ caldb sync --dry-run                # show diff without writing
 ```
 
 Output:
-```
+
+```text
 Auto: PROJECT_A_cal.db / PROJECT_A_cal.csv
 Sync: 2 added, 5 changed, 0 deleted (7 total)
 
 CHANGED:
   ~ TempCtlSetPnt
   ~ FanSpdReqMax
-  ...
 ```
+
+**Bidirectional sync — writing DB changes back to the CSV:**
+
+When parameters are edited via CLI (`add`, `update`, `delete`) the CSV falls
+behind. `sync --to-csv` reverses the direction: it reads the current DB state
+and patches the CSV in-place, preserving row order and column format.
+
+```bash
+caldb sync --to-csv                 # write DB changes back to CSV
+caldb sync --to-csv --dry-run       # preview without writing
+```
+
+Direction is auto-detected when the flag is omitted:
+
+| Situation                   | Auto-selected direction |
+|-----------------------------|-------------------------|
+| Only CSV changed            | CSV -> DB               |
+| Only DB changed (CLI edits) | DB -> CSV               |
+| Both changed                | Conflict — manual       |
+
+When writing to CSV, each change is confirmed interactively:
+
+```text
+DB -> CSV: 0 to add, 2 to update
+
+Confirm each change  (y=yes  n=skip  a=accept all  q=quit):
+
+  UPDATE  FanSpdReqMax  (100 -> 90)
+  [y/n/a/q] >
+```
+
+If the CSV has uncommitted git changes a warning is shown before any write.
 
 ---
 
@@ -240,10 +282,13 @@ caldb show                        # all parameters (detailed)
 caldb show -n TempCtlSetPnt       # one parameter
 caldb show -n "FanSpd*"           # glob pattern
 caldb show -n "FanSpd*" -c        # compact: one line per parameter
+caldb show --at v1.2              # all parameters as they were at a tag
+caldb show -n TempCtlSetPnt --at v1.2   # single parameter at a tag
 ```
 
 Detailed output:
-```
+
+```text
 TempCtlSetPnt
   value:    22.5
   type:     single, degC, size=1
@@ -254,10 +299,61 @@ TempCtlSetPnt
 ```
 
 Compact output (`-c`):
-```
+
+```text
 FanSpdMapX=0 20 40 60 80 100
 FanSpdReqMax=100
 FanSpdReqMin=20
+```
+
+When `--at <tag>` is given, values and comments are reconstructed from history
+at the tag timestamp.  Metadata (type, range, description) always reflects the
+current state since those fields are not tracked per-change.
+
+---
+
+### `search` — find parameters by metadata
+
+```bash
+caldb search -D "timeout"           # description contains "timeout"
+caldb search -D "*derate*"          # description glob
+caldb search -D "speed" -t uint8    # description AND datatype (AND-ed)
+caldb search -s "App/FanCtl"        # by source module
+caldb search -u "rpm" -c            # by unit, compact output
+caldb search -n "*Map*" -D "axis"   # name glob AND description
+```
+
+All filters are AND-ed.  Plain strings match as substrings; `*` and `?` work
+as wildcards.  Options: `-n` name · `-D` description · `-t` datatype ·
+`-u` unit · `-s` source · `-c` compact output.
+
+---
+
+### `tag` — create a snapshot label
+
+```bash
+caldb tag -n v1.2 -m "sprint 5 release candidate"
+caldb tag -n pre-tuning             # message is optional
+```
+
+Tags record the current timestamp so any parameter's value can be queried
+at that point later with `caldb show --at <tag>`.
+
+---
+
+### `tags` — list all snapshot labels
+
+```bash
+caldb tags
+```
+
+Output:
+
+```text
+2 tag(s):
+
+  2026-06-08 14:10:55  v1.0  baseline after initial import
+  2026-06-09 09:30:00  v1.1  sprint 1 tuning
 ```
 
 ---
@@ -408,7 +504,7 @@ If multiple pairs exist in the directory, `--db` is required.
 ## Programmatic API
 
 ```python
-from calibrationdb import CalibrationDatabase, CalibrationParameter
+from calibrationdb.cal_db_util import CalibrationDatabase, CalibrationParameter
 
 db = CalibrationDatabase('PROJECT_A_cal.db')
 
@@ -418,13 +514,43 @@ added, changed, deleted = db.sync_from_csv(
     sync_comment='sprint 5 tuning',
 )
 
+# Write DB changes back to CSV (bidirectional sync)
+diff = db.compute_db_to_csv_diff('PROJECT_A_cal.csv')
+db.write_back_to_csv('PROJECT_A_cal.csv', diff)
+db.store_csv_hash('PROJECT_A_cal.csv')   # clears db_changed flag
+
+# Current parameter values
+for row in db.get_parameters():          # all
+    print(row['Name'], row['Value'])
+
+for row in db.get_parameters('FanSpd*'): # glob
+    print(row['Name'], row['Value'])
+
+# Search by metadata
+for row in db.search_parameters(description='timeout', datatype='uint16'):
+    print(row['Name'], row['Value'])
+
 # History for one parameter
 for entry in db.get_parameter_log('TempCtlSetPnt'):
     print(entry['ChangeDateTime'], entry['ChangeType'], entry['NewValue'])
 
 # Recent changes across all parameters
-for entry in db.get_recent_changes(limit=10):
+for entry in db.get_recent_changes(limit=10, since='sprint 4 tuning'):
     print(entry['Name'], entry['ChangeType'], entry['OldValue'], '->', entry['NewValue'])
+
+# Tags
+db.tag_snapshot('v1.2', comment='sprint 5 release candidate')
+for t in db.list_tags():
+    print(t['name'], t['ChangeDateTime'], t['comment'])
+
+# Parameter values at a tagged point
+tag_time, rows = db.get_parameters_at_tag('v1.2', pattern='FanSpd*')
+for row in rows:
+    print(row['Name'], row['Value'])
+
+# Sync state
+in_sync, last_sync_time = db.get_sync_status('PROJECT_A_cal.csv')
+db_changed_time = db.get_db_changed_time()   # None if no CLI edits since sync
 
 db.close()
 ```
@@ -449,7 +575,7 @@ calibrationdb/
 
 ## Roadmap
 
-Planned features — `status`, `validate`, `search`, `tag`, `restore`, `diff`, `merge`,
+Remaining planned features — `restore`, `stats`, `diff`, `merge`, shell completions,
 and more — are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## License
