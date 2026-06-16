@@ -1033,6 +1033,57 @@ def _format_change_compact(e):
     return f"{ts}  {ctype:6s}  {e['Name']}{detail}{sc}"
 
 
+def _trunc(val, width=22):
+    s = str(val) if val is not None else ''
+    return s if len(s) <= width else s[:width - 1] + '~'
+
+
+def _print_changes_table(entries, indent=''):
+    """Print entries as an aligned table."""
+    _MAX_VAL = 22
+
+    rows = []
+    for e in entries:
+        ctype = e['ChangeType'].upper()
+        if ctype in ('UPDATE', 'RESTORE'):
+            old_v = _trunc(e['OldValue'], _MAX_VAL)
+            new_v = _trunc(e['NewValue'], _MAX_VAL)
+        elif ctype == 'ADD':
+            old_v, new_v = '', _trunc(e['NewValue'], _MAX_VAL)
+        else:  # DELETE
+            old_v, new_v = _trunc(e['OldValue'], _MAX_VAL), ''
+        rows.append({
+            'ts':    e['ChangeDateTime'][:19].replace('T', ' '),
+            'type':  ctype,
+            'name':  e['Name'],
+            'old':   old_v,
+            'new':   new_v,
+            'sc':    e['SyncComment'] or '',
+        })
+
+    w_name = max((len(r['name']) for r in rows), default=4)
+    w_old  = max((len(r['old'])  for r in rows), default=9)
+    w_new  = max((len(r['new'])  for r in rows), default=9)
+    w_name = max(w_name, 4)
+    w_old  = max(w_old,  9)
+    w_new  = max(w_new,  9)
+    has_sc = any(r['sc'] for r in rows)
+
+    hdr = (f"{'DateTime':<19}  {'Type':<7}  {'Name':<{w_name}}  "
+           f"{'Old Value':<{w_old}}  {'New Value':<{w_new}}")
+    if has_sc:
+        hdr += '  Comment'
+    click.echo(indent + hdr)
+    click.echo(indent + '-' * len(hdr))
+
+    for r in rows:
+        line = (f"{r['ts']:<19}  {r['type']:<7}  {r['name']:<{w_name}}  "
+                f"{r['old']:<{w_old}}  {r['new']:<{w_new}}")
+        if has_sc:
+            line += f"  {r['sc']}"
+        click.echo(indent + line)
+
+
 def _emit_tags_between(tags_desc, after_dt, until_dt):
     """Print tag markers for tags whose timestamp falls in (until_dt, after_dt].
 
@@ -1064,11 +1115,12 @@ def _emit_tags_between(tags_desc, after_dt, until_dt):
 @click.option('--since', '-s', default=None,
               help='Show changes on or after a date (2026-06-01) or sync comment')
 @click.option('--compact', '-c', is_flag=True, help='One line per change')
+@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
 @click.option('--no-tags', 'no_tags', is_flag=True, help='Hide tag markers')
 @click.option('--by-tag', 'by_tag', is_flag=True,
               help='Group changes between tag milestones (implies -n 0)')
 @click.pass_context
-def changes(ctx, count, change_type, since, compact, no_tags, by_tag):
+def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
     """Show recent changes across all parameters.
 
     Tags are shown as markers interleaved with changes (like git log --oneline).
@@ -1083,7 +1135,9 @@ def changes(ctx, count, change_type, since, compact, no_tags, by_tag):
       caldb changes -s 2026-06-01
       caldb changes -s "sprint 4 tuning"
       caldb changes -c           # compact, one line per change
+      caldb changes -T           # aligned table
       caldb changes --by-tag     # grouped by tag milestones
+      caldb changes --by-tag -T  # table per tag section
     """
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -1114,7 +1168,7 @@ def changes(ctx, count, change_type, since, compact, no_tags, by_tag):
             click.echo()
 
         # Build sections newest -> oldest:
-        #   (header, upper_dt_exclusive, lower_dt_inclusive)
+        #   (header, upper_dt, lower_dt)
         # Changes in section: lower_dt < change.dt <= upper_dt
         # (None upper = no upper bound; None lower = no lower bound)
         sections = []
@@ -1152,14 +1206,23 @@ def changes(ctx, count, change_type, since, compact, no_tags, by_tag):
             if not section_entries:
                 continue
             click.secho(header, fg='cyan')
-            for e in section_entries:
-                click.echo(f"  {_format_change_compact(e)}")
+            if table:
+                _print_changes_table(section_entries, indent='  ')
+            else:
+                for e in section_entries:
+                    click.echo(f"  {_format_change_compact(e)}")
             click.echo()
         return
 
     # ------------------------------------------------------------------
     # Standard interleaved view
     # ------------------------------------------------------------------
+
+    # --table: one aligned table, no interleaved tag markers
+    if table:
+        _print_changes_table(entries)
+        return
+
     tags_desc = list(reversed(tags)) if not no_tags else []
 
     # Emit any tags newer than the first (most recent) change entry
