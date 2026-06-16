@@ -580,12 +580,68 @@ def validate(ctx, name):
     ctx.exit(1)
 
 
-def _print_param_rows(rows, compact):
+def _print_param_rows(rows, compact, table=False):
     """Shared display logic for show and search."""
     if compact:
         for r in rows:
             click.echo(f"{r['Name']}={r['Value']}")
         return
+
+    if table:
+        _TVAL = 24
+        _TDESC = 30
+
+        # Determine which optional columns have any data
+        has_type  = any(r.get('DataType') for r in rows)
+        has_unit  = any(r.get('Unit')     for r in rows)
+        has_range = any(r.get('Min') is not None or r.get('Max') is not None for r in rows)
+        has_desc  = any(r.get('Description') for r in rows)
+        has_cmt   = any(r.get('COMMENT')     for r in rows)
+
+        def range_str(r):
+            mn = r.get('Min')
+            mx = r.get('Max')
+            if mn is None and mx is None:
+                return ''
+            return f"{'' if mn is None else mn}..{'' if mx is None else mx}"
+
+        trows = [{
+            'name':  r['Name'],
+            'value': _trunc(r.get('Value') or '', _TVAL),
+            'type':  r.get('DataType') or '',
+            'unit':  r.get('Unit') or '',
+            'range': range_str(r),
+            'desc':  _trunc(r.get('Description') or '', _TDESC),
+            'cmt':   _trunc(r.get('COMMENT') or '', _TDESC),
+        } for r in rows]
+
+        w_name  = max(max(len(r['name'])  for r in trows), 4)
+        w_value = max(max(len(r['value']) for r in trows), 5)
+        w_type  = max(max(len(r['type'])  for r in trows), 8)  if has_type  else 0
+        w_unit  = max(max(len(r['unit'])  for r in trows), 4)  if has_unit  else 0
+        w_range = max(max(len(r['range']) for r in trows), 5)  if has_range else 0
+        w_desc  = max(max(len(r['desc'])  for r in trows), 11) if has_desc  else 0
+        w_cmt   = max(max(len(r['cmt'])   for r in trows), 7)  if has_cmt   else 0
+
+        def make_row(name, value, typ, unit, rng, desc, cmt):
+            cols = [f"{name:<{w_name}}", f"{value:<{w_value}}"]
+            if has_type:  cols.append(f"{typ:<{w_type}}")
+            if has_unit:  cols.append(f"{unit:<{w_unit}}")
+            if has_range: cols.append(f"{rng:<{w_range}}")
+            if has_desc:  cols.append(f"{desc:<{w_desc}}")
+            if has_cmt:   cols.append(f"{cmt:<{w_cmt}}")
+            return '  '.join(cols)
+
+        hdr = make_row('Name', 'Value',
+                       'DataType', 'Unit', 'Range', 'Description', 'Comment')
+        click.echo(hdr)
+        click.echo('-' * len(hdr))
+        for r in trows:
+            click.echo(make_row(r['name'], r['value'],
+                                r['type'], r['unit'], r['range'],
+                                r['desc'], r['cmt']))
+        return
+
     for r in rows:
         click.echo(f"{r['Name']}")
         click.echo(f"  value:    {r['Value']}")
@@ -611,10 +667,11 @@ def _print_param_rows(rows, compact):
 @click.option('--name', '-n', default=None,
               help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.')
 @click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
+@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
 @click.option('--at', default=None, metavar='TAG',
               help='Show values as they were at a named tag (see: caldb tags)')
 @click.pass_context
-def show(ctx, name, compact, at):
+def show(ctx, name, compact, table, at):
     """Show current value and metadata for one or more parameters."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -641,7 +698,7 @@ def show(ctx, name, compact, at):
             click.echo(msg)
             return
 
-    _print_param_rows(rows, compact)
+    _print_param_rows(rows, compact, table=table)
 
 
 @cli.command()
@@ -656,8 +713,9 @@ def show(ctx, name, compact, at):
 @click.option('--source', '-s', default=None,
               help='Source contains or glob (e.g. "App/Fan*")')
 @click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
+@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
 @click.pass_context
-def search(ctx, name, description, datatype, unit, source, compact):
+def search(ctx, name, description, datatype, unit, source, compact, table):
     """Search parameters by description, datatype, unit, source, or name.
 
     \b
@@ -669,7 +727,7 @@ def search(ctx, name, description, datatype, unit, source, compact):
       caldb search -D "derate"
       caldb search -D "*temp*" -t uint8
       caldb search -s "App/FanCtl"
-      caldb search -u "rpm" -c
+      caldb search -u "rpm" -T
     """
     if not any([name, description, datatype, unit, source]):
         raise click.UsageError("Provide at least one filter (-n, -D, -t, -u, -s).")
@@ -686,7 +744,7 @@ def search(ctx, name, description, datatype, unit, source, compact):
         click.echo("No parameters match the given filters.")
         return
 
-    _print_param_rows(rows, compact)
+    _print_param_rows(rows, compact, table=table)
 
 
 @cli.command()
