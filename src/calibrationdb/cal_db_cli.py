@@ -1174,8 +1174,8 @@ def _emit_tags_between(tags_desc, after_dt, until_dt):
 
 
 @cli.command()
-@click.option('-n', '--count', default=10, show_default=True,
-              help='Number of entries to show (0 = all)')
+@click.option('-n', '--count', default=None, type=int,
+              help='Number of entries to show (0 = all; default: 10, or all with --by-tag)')
 @click.option('--type', '-t', 'change_type',
               type=click.Choice(['add', 'update', 'delete', 'restore', 'meta'], case_sensitive=False),
               default=None, help='Filter by change type')
@@ -1209,9 +1209,8 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    # --by-tag needs the full history to build sections
-    fetch_limit = 0 if by_tag else count
-    entries = db.get_recent_changes(limit=fetch_limit, since=since)
+    effective_count = count if count is not None else (0 if by_tag else 10)
+    entries = db.get_recent_changes(limit=effective_count, since=since)
     tags = db.list_tags()   # oldest first
     db.close()
 
@@ -1303,7 +1302,7 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
             _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
         return
 
-    label = f"last {count}" if count else "all"
+    label = f"last {effective_count}" if effective_count else "all"
     type_label = f" [{change_type}]" if change_type else ""
     click.echo(f"{len(entries)} change(s){type_label} ({label}):\n")
 
