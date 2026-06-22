@@ -289,6 +289,8 @@ def review(ctx, file, prefix):
       s              skip (do not apply this change)
       q              stop reviewing and apply everything confirmed so far
       a              abort -- apply nothing
+
+    See also: caldb annotate  -- retroactively label changes already in history
     """
     db_path, file = _resolve_pair(ctx.obj['db'], file)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -1326,46 +1328,132 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
 
 
 @cli.command()
-@click.option('--message', '-m', required=True, help='New sync comment to write')
+@click.option('--message', '-m', default=None,
+              help='New sync comment (omit to enter interactive mode)')
 @click.option('--since', '-s', default=None,
               help='Start of time window (ISO date/datetime, e.g. "2026-06-08 14:10")')
 @click.option('--until', '-u', default=None,
-              help='End of time window, exclusive (ISO date/datetime). '
-                   'Omit to cover everything from --since to now.')
+              help='End of time window, exclusive. Omit to cover everything from --since onward.')
 @click.option('--id', 'entry_id', default=None, type=int,
               help='Annotate a single history row by its id (see: caldb log)')
-@click.option('--dry-run', is_flag=True, help='Preview matching rows without writing')
+@click.option('-n', '--count', default=20, show_default=True,
+              help='Interactive mode: max entries to step through')
+@click.option('--type', '-t', 'change_type',
+              type=click.Choice(['add', 'update', 'delete', 'restore', 'meta'], case_sensitive=False),
+              default=None, help='Interactive mode: filter by change type')
+@click.option('--dry-run', is_flag=True, help='Bulk mode: preview matching rows without writing')
 @click.pass_context
-def annotate(ctx, message, since, until, entry_id, dry_run):
+def annotate(ctx, message, since, until, entry_id, count, change_type, dry_run):
     """Retroactively set or update the sync comment on history entries.
 
+    Without --message, opens an interactive session where you step through
+    recent changes one by one and edit each comment in place.
+
     \b
-    Examples:
-      # Label all changes from a sync session
-      caldb annotate -m "sprint 5 baseline" -s "2026-06-08 14:10"
+    Interactive mode (no --message):
+      caldb annotate                     # step through last 20 changes
+      caldb annotate -n 50              # step through last 50
+      caldb annotate -s 2026-06-08      # only entries from that date onward
+      caldb annotate -t update          # only value changes
 
-      # Label a window between two timestamps
+    \b
+    Bulk mode (with --message):
+      caldb annotate -m "sprint 5" -s "2026-06-08 14:10"
       caldb annotate -m "hot fix" -s "2026-06-10 09:00" -u "2026-06-10 10:00"
-
-      # Annotate one specific row (id from caldb log)
       caldb annotate -m "typo fix" --id 42
-
-      # Preview which rows would be updated
       caldb annotate -m "sprint 5" -s "2026-06-08" --dry-run
+
+    See also: caldb review  -- interactively confirm pending CSV changes before writing
     """
-    if entry_id is None and since is None:
-        raise click.UsageError("Provide --since (for a time window) or --id (for one row).")
-
-    db_path = _resolve_db(ctx.obj['db'])
-    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-
     def _norm_dt(dt):
         if dt and len(dt) > 10 and dt[10] == ' ':
             return dt[:10] + 'T' + dt[11:]
         return dt
 
+    db_path = _resolve_db(ctx.obj['db'])
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+
+    # ------------------------------------------------------------------
+    # Interactive mode
+    # ------------------------------------------------------------------
+    if message is None:
+        entries = db.get_recent_changes(limit=count, since=since)
+        if change_type:
+            entries = [e for e in entries if e['ChangeType'].lower() == change_type.lower()]
+        # Reverse so we step oldest-first (more natural for labelling a session)
+        entries = list(reversed(entries))
+
+        if not entries:
+            click.echo("No history entries found.")
+            db.close()
+            return
+
+        click.echo(
+            f"\n{len(entries)} change(s) to annotate\n"
+            f"Enter=keep  <text>=set comment  s=skip  q=quit&save  a=abort\n"
+        )
+
+        pending = []   # list of (id, new_comment) to write at the end
+        total = len(entries)
+
+        for idx, e in enumerate(entries, 1):
+            ts = e['ChangeDateTime'][:19].replace('T', ' ')
+            ctype = e['ChangeType'].upper()
+            existing = e['SyncComment'] or ''
+
+            click.echo(f"--- [{idx}/{total}]  {ctype:7s}  {e['Name']}  ({ts})")
+
+            # Show value context
+            if ctype in ('UPDATE', 'RESTORE'):
+                click.echo(f"    value:   {e['OldValue']}  ->  {e['NewValue']}")
+                if (e.get('OldComment') or '') != (e.get('NewComment') or ''):
+                    click.echo(f"    param comment: {e.get('OldComment')}  ->  {e.get('NewComment')}")
+            elif ctype == 'ADD':
+                click.echo(f"    value:   {e['NewValue']}")
+            elif ctype == 'DELETE':
+                click.echo(f"    value at deletion: {e['OldValue']}")
+            elif ctype == 'META':
+                click.echo(f"    meta:    {e['NewValue']}")
+
+            if existing:
+                prompt_text = f"    sync comment [{existing}]"
+                raw = click.prompt(prompt_text, default=existing,
+                                   show_default=False, prompt_suffix=' > ')
+            else:
+                raw = click.prompt("    sync comment", default='',
+                                   show_default=False, prompt_suffix=' > ')
+            raw = raw.strip()
+
+            if raw.lower() == 'a':
+                click.echo("\nAborted -- nothing written.")
+                db.close()
+                return
+            if raw.lower() == 'q':
+                break
+            if raw.lower() == 's' or raw == existing:
+                continue   # skip: no change
+            pending.append((e['id'], raw))
+
+        if not pending:
+            click.echo("\nNo changes made.")
+            db.close()
+            return
+
+        written = db.annotate_many(pending)
+        db.close()
+        click.echo(f"\nUpdated {written} history row(s).")
+        return
+
+    # ------------------------------------------------------------------
+    # Bulk mode (--message provided)
+    # ------------------------------------------------------------------
+    if entry_id is None and since is None:
+        raise click.UsageError(
+            "Provide --since (for a time window) or --id (for one row), "
+            "or omit --message to use interactive mode."
+        )
+
     if dry_run:
-        # Show matching rows without updating
         cur = db.conn.cursor()
         if entry_id is not None:
             cur.execute(
@@ -1398,12 +1486,12 @@ def annotate(ctx, message, since, until, entry_id, dry_run):
             click.echo(f"  {rid:>5}  {dt[:19]}  {ctype:6}  {name}{old}")
         return
 
-    count = db.annotate_changes(message, since=since, until=until, entry_id=entry_id)
+    n = db.annotate_changes(message, since=since, until=until, entry_id=entry_id)
     db.close()
-    if count == 0:
+    if n == 0:
         click.echo("No matching history rows found.")
     else:
-        click.echo(f"Updated {count} history row(s) -> \"{message}\"")
+        click.echo(f"Updated {n} history row(s) -> \"{message}\"")
 
 
 @cli.command('install-hook')

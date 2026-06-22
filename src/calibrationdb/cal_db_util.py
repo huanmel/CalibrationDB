@@ -1076,7 +1076,7 @@ class CalibrationDatabase:
                 since_dt = row[0] if row and row[0] else None
 
         base = '''
-            SELECT Name, ChangeType, OldValue, NewValue, OldComment, NewComment,
+            SELECT id, Name, ChangeType, OldValue, NewValue, OldComment, NewComment,
                    ChangeDateTime, SyncComment
             FROM calibration_history
         '''
@@ -1132,6 +1132,23 @@ class CalibrationDatabase:
             raise ValueError("Provide entry_id or since.")
         self.conn.commit()
         return cur.rowcount
+
+    def annotate_many(self, updates):
+        """Apply a list of (id, new_comment) updates to calibration_history.
+
+        updates  -- iterable of (entry_id, message) pairs
+        Returns the number of rows updated.
+        """
+        cur = self.conn.cursor()
+        count = 0
+        for entry_id, message in updates:
+            cur.execute(
+                'UPDATE calibration_history SET SyncComment=? WHERE id=?',
+                (message, entry_id),
+            )
+            count += cur.rowcount
+        self.conn.commit()
+        return count
 
     # ------------------------------------------------------------------
     # Import / Export (existing)
