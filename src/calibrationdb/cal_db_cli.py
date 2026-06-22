@@ -170,10 +170,13 @@ def _git_file_status(path):
     return 'clean'
 
 
-def _print_sync_report(added, changed, deleted, dry_run=False):
+def _print_sync_report(added, changed, deleted, meta_updated=None, dry_run=False):
+    meta_updated = meta_updated or []
     tag = '[DRY RUN] ' if dry_run else ''
     total = len(added) + len(changed) + len(deleted)
-    click.echo(f"{tag}Sync: {len(added)} added, {len(changed)} changed, {len(deleted)} deleted ({total} total)")
+    meta_str = f", {len(meta_updated)} meta updated" if meta_updated else ""
+    click.echo(f"{tag}Sync: {len(added)} added, {len(changed)} changed, "
+               f"{len(deleted)} deleted{meta_str} ({total} total)")
     if added:
         click.echo("\nADDED:")
         for n in added:
@@ -186,6 +189,10 @@ def _print_sync_report(added, changed, deleted, dry_run=False):
         click.echo("\nDELETED:")
         for n in deleted:
             click.echo(f"  - {n}")
+    if meta_updated:
+        click.echo("\nMETA UPDATED:")
+        for n in meta_updated:
+            click.echo(f"  * {n}")
 
 
 @click.group()
@@ -368,11 +375,12 @@ def review(ctx, file, prefix):
         db.close()
         return
 
-    applied_added, applied_changed, applied_deleted = db.apply_changes(
+    applied_added, applied_changed, applied_deleted, applied_meta = db.apply_changes(
         diff, prefix=prefix, only=confirmed, per_comments=per_comments,
     )
     db.close()
-    _print_sync_report(applied_added, applied_changed, applied_deleted)
+    _print_sync_report(applied_added, applied_changed, applied_deleted,
+                       meta_updated=applied_meta)
 
 
 @cli.command()
@@ -536,10 +544,11 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
 
     else:
         # Default: CSV -> DB
-        added, changed, deleted = db.sync_from_csv(
+        added, changed, deleted, meta_updated = db.sync_from_csv(
             csv_path, prefix=prefix, sync_comment=comment, dry_run=dry_run,
         )
-        _print_sync_report(added, changed, deleted, dry_run=dry_run)
+        _print_sync_report(added, changed, deleted,
+                           meta_updated=meta_updated, dry_run=dry_run)
 
     db.close()
 
@@ -1084,7 +1093,7 @@ def _format_change_compact(e):
     sc    = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
     if ctype in ('UPDATE', 'RESTORE'):
         detail = f"  {e['OldValue']} -> {e['NewValue']}"
-    elif ctype == 'ADD':
+    elif ctype in ('ADD', 'META'):
         detail = f"  {e['NewValue']}"
     else:
         detail = ''
@@ -1106,7 +1115,7 @@ def _print_changes_table(entries, indent=''):
         if ctype in ('UPDATE', 'RESTORE'):
             old_v = _trunc(e['OldValue'], _MAX_VAL)
             new_v = _trunc(e['NewValue'], _MAX_VAL)
-        elif ctype == 'ADD':
+        elif ctype in ('ADD', 'META'):
             old_v, new_v = '', _trunc(e['NewValue'], _MAX_VAL)
         else:  # DELETE
             old_v, new_v = _trunc(e['OldValue'], _MAX_VAL), ''
@@ -1168,7 +1177,7 @@ def _emit_tags_between(tags_desc, after_dt, until_dt):
 @click.option('-n', '--count', default=10, show_default=True,
               help='Number of entries to show (0 = all)')
 @click.option('--type', '-t', 'change_type',
-              type=click.Choice(['add', 'update', 'delete', 'restore'], case_sensitive=False),
+              type=click.Choice(['add', 'update', 'delete', 'restore', 'meta'], case_sensitive=False),
               default=None, help='Filter by change type')
 @click.option('--since', '-s', default=None,
               help='Show changes on or after a date (2026-06-01) or sync comment')
@@ -1311,6 +1320,8 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
             click.echo(f"           value:   {e['NewValue']}")
         elif ctype == 'DELETE':
             click.echo(f"           value at deletion: {e['OldValue']}")
+        elif ctype == 'META':
+            click.echo(f"           meta:    {e['NewValue']}")
         next_dt = entries[i + 1]['ChangeDateTime'] if i + 1 < len(entries) else None
         _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
 

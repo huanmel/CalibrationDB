@@ -106,6 +106,23 @@ def _validate_value(value, min_val=None, max_val=None, datatype=None, size=None)
     return issues
 
 
+def _format_meta_diff(p, db_row):
+    """Return a human-readable summary of which metadata fields changed."""
+    def _s(v): return '' if v is None else str(v)
+    checks = [
+        ('DataType',    _s(p.datatype),    _s(db_row.get('DataType'))),
+        ('Unit',        _s(p.unit),        _s(db_row.get('Unit'))),
+        ('Size',        _s(p.size),        _s(db_row.get('Size'))),
+        ('Min',         _s(p.min_val),     _s(db_row.get('Min'))),
+        ('Max',         _s(p.max_val),     _s(db_row.get('Max'))),
+        ('Description', _s(p.description), _s(db_row.get('Description'))),
+        ('Who',         _s(p.who),         _s(db_row.get('Who'))),
+        ('Source',      _s(p.source),      _s(db_row.get('Source'))),
+    ]
+    return ' | '.join(f"{lbl}: {old} -> {new}"
+                      for lbl, new, old in checks if new != old)
+
+
 def _parse_multicol_row(row):
     """Parse a row from the multi-column CSV format (Value_1 .. Value_10)."""
     parts = [row.get(c, '').strip() for c in _VALUE_COLS]
@@ -633,7 +650,7 @@ class CalibrationDatabase:
                         'param': p,
                     })
                 elif _meta_differs(p, db_row):
-                    meta_only.append({'name': name, 'param': p})
+                    meta_only.append({'name': name, 'param': p, 'db_row': db_row})
 
         deleted = [
             {'name': n,
@@ -666,7 +683,7 @@ class CalibrationDatabase:
         def _comment(name):
             return per_comments.get(name, sync_comment)
 
-        applied_added, applied_changed, applied_deleted = [], [], []
+        applied_added, applied_changed, applied_deleted, applied_meta = [], [], [], []
 
         for p in diff['added']:
             if only is not None and p.name not in only:
@@ -724,9 +741,9 @@ class CalibrationDatabase:
                   p.who, p.users, p.source, name))
             applied_changed.append(name)
 
-        # Metadata-only changes (value/comment unchanged) — update silently
+        # Metadata-only changes (value/comment unchanged) — update + record
         for m in diff.get('meta_only', []):
-            name, p = m['name'], m['param']
+            name, p, db_row = m['name'], m['param'], m['db_row']
             if only is not None and name not in only:
                 continue
             cur.execute('''
@@ -736,6 +753,10 @@ class CalibrationDatabase:
                 WHERE Name = ?
             ''', (p.datatype, p.unit, p.size, p.min_val, p.max_val,
                   p.description, p.who, p.users, p.source, name))
+            diff_str = _format_meta_diff(p, db_row)
+            self._insert_history(cur, name, 'meta', new_value=diff_str,
+                                 sync_comment=sync_comment)
+            applied_meta.append(name)
 
         for d in diff['deleted']:
             name = d['name']
@@ -751,21 +772,23 @@ class CalibrationDatabase:
             applied_deleted.append(name)
 
         self.conn.commit()
-        return applied_added, applied_changed, applied_deleted
+        return applied_added, applied_changed, applied_deleted, applied_meta
 
     def sync_from_csv(self, csv_file, prefix='CAL-', sync_comment='', dry_run=False):
         """Diff CSV against DB and record all changes.
-        Returns (added, changed, deleted) lists of names.
+        Returns (added, changed, deleted, meta_updated) lists of names.
         """
         diff = self.compute_diff(csv_file)
-        added   = [p.name for p in diff['added']]
-        changed = [c['name'] for c in diff['changed']]
-        deleted = [d['name'] for d in diff['deleted']]
+        added        = [p.name for p in diff['added']]
+        changed      = [c['name'] for c in diff['changed']]
+        deleted      = [d['name'] for d in diff['deleted']]
+        meta_updated = [m['name'] for m in diff.get('meta_only', [])]
         if dry_run:
-            return added, changed, deleted
-        self.apply_changes(diff, prefix=prefix, sync_comment=sync_comment)
+            return added, changed, deleted, meta_updated
+        _, _, _, applied_meta = self.apply_changes(
+            diff, prefix=prefix, sync_comment=sync_comment)
         self.store_csv_hash(csv_file)
-        return added, changed, deleted
+        return added, changed, deleted, applied_meta
 
     @staticmethod
     def _csv_hash(csv_path):
