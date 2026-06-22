@@ -1325,6 +1325,87 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
         _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
 
 
+@cli.command()
+@click.option('--message', '-m', required=True, help='New sync comment to write')
+@click.option('--since', '-s', default=None,
+              help='Start of time window (ISO date/datetime, e.g. "2026-06-08 14:10")')
+@click.option('--until', '-u', default=None,
+              help='End of time window, exclusive (ISO date/datetime). '
+                   'Omit to cover everything from --since to now.')
+@click.option('--id', 'entry_id', default=None, type=int,
+              help='Annotate a single history row by its id (see: caldb log)')
+@click.option('--dry-run', is_flag=True, help='Preview matching rows without writing')
+@click.pass_context
+def annotate(ctx, message, since, until, entry_id, dry_run):
+    """Retroactively set or update the sync comment on history entries.
+
+    \b
+    Examples:
+      # Label all changes from a sync session
+      caldb annotate -m "sprint 5 baseline" -s "2026-06-08 14:10"
+
+      # Label a window between two timestamps
+      caldb annotate -m "hot fix" -s "2026-06-10 09:00" -u "2026-06-10 10:00"
+
+      # Annotate one specific row (id from caldb log)
+      caldb annotate -m "typo fix" --id 42
+
+      # Preview which rows would be updated
+      caldb annotate -m "sprint 5" -s "2026-06-08" --dry-run
+    """
+    if entry_id is None and since is None:
+        raise click.UsageError("Provide --since (for a time window) or --id (for one row).")
+
+    db_path = _resolve_db(ctx.obj['db'])
+    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+
+    def _norm_dt(dt):
+        if dt and len(dt) > 10 and dt[10] == ' ':
+            return dt[:10] + 'T' + dt[11:]
+        return dt
+
+    if dry_run:
+        # Show matching rows without updating
+        cur = db.conn.cursor()
+        if entry_id is not None:
+            cur.execute(
+                'SELECT id, Name, ChangeType, ChangeDateTime, SyncComment '
+                'FROM calibration_history WHERE id=?', (entry_id,)
+            )
+        elif until is not None:
+            cur.execute(
+                'SELECT id, Name, ChangeType, ChangeDateTime, SyncComment '
+                'FROM calibration_history '
+                'WHERE ChangeDateTime >= ? AND ChangeDateTime < ? ORDER BY id',
+                (_norm_dt(since), _norm_dt(until)),
+            )
+        else:
+            cur.execute(
+                'SELECT id, Name, ChangeType, ChangeDateTime, SyncComment '
+                'FROM calibration_history '
+                'WHERE ChangeDateTime >= ? ORDER BY id',
+                (_norm_dt(since),),
+            )
+        rows = cur.fetchall()
+        db.close()
+        if not rows:
+            click.echo("No matching history rows.")
+            return
+        click.echo(f"[DRY RUN] Would annotate {len(rows)} row(s) with: \"{message}\"\n")
+        for r in rows:
+            rid, name, ctype, dt, sc = r
+            old = f'  (was: "{sc}")' if sc else ''
+            click.echo(f"  {rid:>5}  {dt[:19]}  {ctype:6}  {name}{old}")
+        return
+
+    count = db.annotate_changes(message, since=since, until=until, entry_id=entry_id)
+    db.close()
+    if count == 0:
+        click.echo("No matching history rows found.")
+    else:
+        click.echo(f"Updated {count} history row(s) -> \"{message}\"")
+
+
 @cli.command('install-hook')
 def install_hook():
     """Install a git pre-commit hook that auto-syncs DB files for staged CSVs."""

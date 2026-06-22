@@ -1,27 +1,29 @@
 # CalibrationDB — Roadmap
 
-## What exists today (v0.2, June 2026)
+## What exists today (v0.3, June 2026)
 
-| Command                    | Purpose                                                      |
-|----------------------------|--------------------------------------------------------------|
-| `sync`                     | CSV -> DB or DB -> CSV (auto-detected); interactive confirm  |
-| `diff`                     | Show what differs between CSV and DB (current state)         |
-| `status`                   | Sync state + git status for both files; scriptable exit code |
-| `review`                   | Interactive per-change confirmation with comments            |
-| `show`                     | Current value + metadata; `--at TAG` for historical queries  |
-| `search`                   | Filter params by description, datatype, unit, source         |
-| `changes`                  | Recent history across all params; `--since` date/comment     |
-| `log`                      | Full history for one parameter                               |
-| `tag` / `tags`             | Named snapshot labels; query values at any tag               |
-| `restore`                  | Revert params to a tag or to the value before last change    |
-| `validate`                 | Check values against Min/Max/DataType constraints            |
-| `add/update/rename/delete` | Manual CRUD via CLI                                          |
-| `load`                     | Bulk import CSV or JSON (no history)                         |
-| `export`                   | Dump active params to CSV                                    |
-| `install-hook`             | Git pre-commit hook: auto-sync staged CSVs                   |
+| Command                    | Purpose                                                                     |
+|----------------------------|-----------------------------------------------------------------------------|
+| `sync`                     | CSV -> DB or DB -> CSV (auto-detected); interactive confirm                 |
+| `diff`                     | Show what differs between CSV and DB (current state)                        |
+| `status`                   | Sync state + git status for both files; scriptable exit code                |
+| `review`                   | Interactive per-change confirmation with comments                           |
+| `show`                     | Current value + metadata; `--at TAG`; `-T` table view                       |
+| `search`                   | Filter params by description, datatype, unit, source; `-T` table view       |
+| `changes`                  | Recent history; `--since`; `-T` table; `--by-tag`; interleaved tag markers  |
+| `log`                      | Full history for one parameter                                              |
+| `tag` / `tags`             | Named snapshot labels; `--at DATETIME` for back-dating                      |
+| `annotate`                 | Retroactively set/fix sync comments on history entries                      |
+| `restore`                  | Revert params to a tag or to the value before last change                   |
+| `validate`                 | Check values against Min/Max/DataType constraints                           |
+| `add/update/rename/delete` | Manual CRUD via CLI                                                         |
+| `load`                     | Bulk import CSV or JSON (no history)                                        |
+| `export`                   | Dump active params to CSV                                                   |
+| `install-hook`             | Git pre-commit hook: auto-sync staged CSVs                                  |
 
 Core internals: two CSV formats auto-detected, SHA-256 sync guard, soft delete,
-`_caldb_meta` for sync state, `_caldb_tags` for snapshots.
+`_caldb_meta` for sync state, `_caldb_tags` for snapshots, metadata-only change
+tracking (`ChangeType='meta'`), type-inherent range validation.
 
 ---
 
@@ -36,7 +38,8 @@ Priority areas:
   `get_parameters_at_tag`, `compute_restore_diff`, tag/restore round-trips
 - CLI integration: sync direction detection, status exit codes, diff output,
   restore --at tag, search filters
-- Edge cases: multicol vs singlecol CSV, never-synced state, conflict detection
+- Edge cases: multicol vs singlecol CSV, never-synced state, conflict detection,
+  meta-only sync, annotate time-window matching
 
 ### B. `diff` — extended comparison modes
 

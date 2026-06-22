@@ -1089,6 +1089,50 @@ class CalibrationDatabase:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def annotate_changes(self, message, since=None, until=None, entry_id=None):
+        """Update SyncComment on history rows.
+
+        Exactly one selector must be provided:
+          entry_id  -- update a single row by id
+          since     -- update all rows with ChangeDateTime >= since
+                       optionally combined with until (< until)
+
+        since/until may use either 'T' or ' ' as the date-time separator;
+        both are normalised to 'T' to match the stored ISO format.
+
+        Returns the number of rows updated.
+        """
+        def _norm(dt):
+            # Replace first space with T so "2026-06-08 14:10" matches stored ISO
+            if dt and len(dt) > 10 and dt[10] == ' ':
+                return dt[:10] + 'T' + dt[11:]
+            return dt
+
+        cur = self.conn.cursor()
+        if entry_id is not None:
+            cur.execute(
+                'UPDATE calibration_history SET SyncComment=? WHERE id=?',
+                (message, entry_id),
+            )
+        elif since is not None:
+            since = _norm(since)
+            if until is not None:
+                cur.execute(
+                    'UPDATE calibration_history SET SyncComment=? '
+                    'WHERE ChangeDateTime >= ? AND ChangeDateTime < ?',
+                    (message, since, _norm(until)),
+                )
+            else:
+                cur.execute(
+                    'UPDATE calibration_history SET SyncComment=? '
+                    'WHERE ChangeDateTime >= ?',
+                    (message, since),
+                )
+        else:
+            raise ValueError("Provide entry_id or since.")
+        self.conn.commit()
+        return cur.rowcount
+
     # ------------------------------------------------------------------
     # Import / Export (existing)
     # ------------------------------------------------------------------

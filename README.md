@@ -31,16 +31,19 @@ parameter individually — who changed what value, when, and why.
 - **Two CSV formats** — auto-detected:
   - *Multi-column*: `Value_1 … Value_10` columns (one column per array element)
   - *Single-column*: `Value` with bracket notation `[0 80]` or `[0, 1, 2]`
-- **Per-parameter change history** — every add, update, and delete is logged
+- **Per-parameter change history** — every add, update, delete, and metadata change is logged
   with timestamp, old/new value, and an optional comment
 - **Smart auto-detection** — if a `.db` and `.csv` share the same base name in
   the working directory, no path flags are needed
-- **CLI with short flags** — `-n`, `-f`, `-c`, `-p`, … for quick use in a terminal
+- **CLI with short flags** — `-n`, `-f`, `-c`, `-T`, … for quick use in a terminal
 - **Soft delete** — removed parameters stay in history
 - **Stale-DB warning** — any command that reads or edits the DB checks whether the CSV has changed since the last sync and warns if it has
 - **Bidirectional sync** — `caldb sync --to-csv` writes CLI edits back to the CSV; direction is auto-detected
-- **Snapshot tags** — `caldb tag -n v1.2` marks a point in time; `caldb show --at v1.2` queries any parameter's value at that point
+- **Metadata sync tracking** — when only non-value fields change (Unit, Min/Max, DataType, …) they are counted and recorded separately
+- **Snapshot tags** — `caldb tag -n v1.2` marks a point in time; `caldb show --at v1.2` queries any parameter's value at that point; `--at DATETIME` back-dates a tag
+- **Table output** — `caldb changes -T`, `caldb show -T`, `caldb search -T` for aligned, scannable tables
 - **Search** — `caldb search -D "timeout"` finds parameters by description, datatype, unit, or source
+- **Retroactive annotation** — `caldb annotate` lets you add or fix sync comments on past history entries
 - **No server, no dependencies** beyond `click` — single SQLite file alongside your CSV
 
 ## Installation
@@ -206,12 +209,19 @@ Output:
 
 ```text
 Auto: PROJECT_A_cal.db / PROJECT_A_cal.csv
-Sync: 2 added, 5 changed, 0 deleted (7 total)
+Sync: 2 added, 5 changed, 0 deleted, 1 meta updated (7 total)
 
 CHANGED:
   ~ TempCtlSetPnt
   ~ FanSpdReqMax
+
+META UPDATED:
+  * FanSpdReqMax
 ```
+
+When only non-value fields change (DataType, Unit, Min, Max, Description, …) they
+appear in a separate `META UPDATED` count and section.  These changes are also
+recorded in history with type `meta` and are visible in `caldb changes -t meta`.
 
 **Bidirectional sync — writing DB changes back to the CSV:**
 
@@ -316,6 +326,7 @@ caldb show                        # all parameters (detailed)
 caldb show -n TempCtlSetPnt       # one parameter
 caldb show -n "FanSpd*"           # glob pattern
 caldb show -n "FanSpd*" -c        # compact: one line per parameter
+caldb show -T                     # aligned table (all parameters)
 caldb show --at v1.2              # all parameters as they were at a tag
 caldb show -n TempCtlSetPnt --at v1.2   # single parameter at a tag
 ```
@@ -355,11 +366,12 @@ caldb search -D "speed" -t uint8    # description AND datatype (AND-ed)
 caldb search -s "App/FanCtl"        # by source module
 caldb search -u "rpm" -c            # by unit, compact output
 caldb search -n "*Map*" -D "axis"   # name glob AND description
+caldb search -D "speed" -T          # aligned table output
 ```
 
 All filters are AND-ed.  Plain strings match as substrings; `*` and `?` work
 as wildcards.  Options: `-n` name · `-D` description · `-t` datatype ·
-`-u` unit · `-s` source · `-c` compact output.
+`-u` unit · `-s` source · `-c` compact output · `-T` table output.
 
 ---
 
@@ -367,11 +379,13 @@ as wildcards.  Options: `-n` name · `-D` description · `-t` datatype ·
 
 ```bash
 caldb tag -n v1.2 -m "sprint 5 release candidate"
-caldb tag -n pre-tuning             # message is optional
+caldb tag -n pre-tuning                            # message is optional
+caldb tag -n v1.0 --at "2026-06-08 14:06:47"      # back-date to a past timestamp
 ```
 
-Tags record the current timestamp so any parameter's value can be queried
-at that point later with `caldb show --at <tag>`.
+Tags record a timestamp so any parameter's value can be queried at that point
+later with `caldb show --at <tag>`.  Use `--at` to place a tag at a past point
+(e.g. to label a sync session that happened before you started tagging).
 
 ---
 
@@ -398,20 +412,23 @@ Output:
 caldb changes                        # last 10 (default)
 caldb changes -n 25                  # last 25
 caldb changes -n 0                   # all
-caldb changes -t update              # filter: add | update | delete
+caldb changes -t update              # filter: add | update | delete | restore | meta
 caldb changes -s 2026-06-01          # on or after a date
 caldb changes -s "sprint 4 tuning"   # on or after the sync with that -c comment
 caldb changes -c                     # compact: one line per change
+caldb changes -T                     # aligned table
+caldb changes --by-tag               # group changes between tag milestones (all entries)
+caldb changes --by-tag -T -n 25      # table view, capped at 25 entries per run
+caldb changes --no-tags              # hide interleaved tag markers
 ```
 
-Detailed output:
+Detailed output (tags are interleaved as markers, like `git log --oneline`):
 ```
 5 change(s) (last 10):
 
   2026-06-08 14:10:56  UPDATE  TempCtlSetPnt  [sprint 5 tuning]
            value:   22.5  ->  24.0
-  2026-06-08 14:10:56  UPDATE  FanSpdReqMax  [sprint 5 tuning]
-           value:   100  ->  90
+  ---- tag: v1.1  "sprint 5 baseline" ----
   2026-06-08 14:10:55  ADD     PmpSpdMin  [initial import v0]
            value:   500
 ```
@@ -422,6 +439,25 @@ Compact output (`-c`):
 2026-06-08 14:10:56  UPDATE  FanSpdReqMax  100 -> 90  [sprint 5 tuning]
 2026-06-08 14:10:55  ADD     PmpSpdMin  500  [initial import v0]
 ```
+
+Table output (`-T`):
+```
+DateTime             Type     Name            Old Value  New Value  Comment
+---------------------------------------------------------------------------
+2026-06-08 14:10:56  UPDATE   TempCtlSetPnt   22.5       24.0       sprint 5 tuning
+2026-06-08 14:10:56  UPDATE   FanSpdReqMax    100        90         sprint 5 tuning
+```
+
+`--by-tag` output groups changes between consecutive tags:
+```
+After v1.1:
+  2026-06-08 ...  UPDATE  TempCtlSetPnt  22.5 -> 24.0  [sprint 5 tuning]
+
+v1.0..v1.1  "sprint 5 baseline":
+  2026-06-08 ...  ADD     FanSpdMapX  0 20 40 60 80 100  [initial import]
+```
+
+`-n` limits apply per run; omit `-n` with `--by-tag` to see all entries grouped.
 
 ---
 
@@ -495,6 +531,40 @@ caldb load -f params.json
 caldb export                        # writes <dbname>.csv
 caldb export -f output.csv
 ```
+
+---
+
+### `annotate` — retroactively label history entries
+
+Add or fix the sync comment on history entries that were synced without a `-c`
+flag, or whose label you want to update.
+
+```bash
+# Label all changes from a sync session (by start timestamp)
+caldb annotate -m "sprint 5 baseline" -s "2026-06-08 14:10"
+
+# Label a specific time window
+caldb annotate -m "hot fix" -s "2026-06-10 09:00" -u "2026-06-10 10:00"
+
+# Annotate one row by its history id (get ids from caldb log)
+caldb annotate -m "corrected unit" --id 42
+
+# Preview which rows would be updated before writing
+caldb annotate -m "sprint 5" -s "2026-06-08" --dry-run
+```
+
+`--dry-run` output:
+
+```text
+[DRY RUN] Would annotate 4 row(s) with: "sprint 5 baseline"
+
+    1  2026-06-08T14:10:55  add     FanSpdReqMax  (was: "initial import")
+    2  2026-06-08T14:10:55  add     FanSpdMapX    (was: "initial import")
+```
+
+The `--since` / `--until` window uses the stored ISO timestamps.  Both `T` and
+space separators are accepted (`"2026-06-08T14:10"` and `"2026-06-08 14:10"` are
+equivalent).
 
 ---
 
