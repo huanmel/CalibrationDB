@@ -40,6 +40,17 @@ _INT_TYPES = {
 }
 _NUMERIC_TYPES = _INT_TYPES | {'single', 'double', 'float', 'float32', 'float64'}
 
+# Hard limits imposed by the data type itself (independent of Min/Max fields)
+_TYPE_RANGES = {
+    'boolean': (0, 1),    'bool':   (0, 1),
+    'uint8':   (0, 255),  'uint16': (0, 65535),
+    'uint32':  (0, 4294967295),
+    'uint64':  (0, 18446744073709551615),
+    'int8':    (-128, 127),         'int16': (-32768, 32767),
+    'int32':   (-2147483648, 2147483647),
+    'int64':   (-9223372036854775808, 9223372036854775807),
+}
+
 
 def _validate_value(value, min_val=None, max_val=None, datatype=None, size=None):
     """Check value against constraints. Returns list of warning strings."""
@@ -58,6 +69,8 @@ def _validate_value(value, min_val=None, max_val=None, datatype=None, size=None)
     dt = (datatype or '').lower().strip()
     is_int     = dt in _INT_TYPES
     is_numeric = dt in _NUMERIC_TYPES
+    type_range = _TYPE_RANGES.get(dt)      # (hard_min, hard_max) or None
+    is_bool    = dt in ('boolean', 'bool')
 
     for elem in elements:
         try:
@@ -66,8 +79,25 @@ def _validate_value(value, min_val=None, max_val=None, datatype=None, size=None)
             if is_numeric:
                 issues.append(f"non-numeric value '{elem}' for type {datatype}")
             continue
+
+        # Fractional value in an integer type
         if is_int and num != int(num):
-            issues.append(f"non-integer {elem} for type {datatype}")
+            issues.append(f"non-integer {num} for type {datatype}")
+            continue  # skip range checks — value is already malformed
+
+        # Boolean: only 0 or 1 allowed
+        if is_bool and int(num) not in (0, 1):
+            issues.append(f"{int(num)} is not a valid boolean (must be 0 or 1)")
+
+        # Type-inherent hard limits (e.g. uint8 must be 0-255)
+        elif type_range is not None:
+            tmin, tmax = type_range
+            if num < tmin:
+                issues.append(f"{elem} below {datatype} minimum ({tmin})")
+            elif num > tmax:
+                issues.append(f"{elem} exceeds {datatype} maximum ({tmax})")
+
+        # Explicit parameter Min/Max (may be narrower than the type range)
         if min_val is not None and num < float(min_val):
             issues.append(f"{elem} < Min ({min_val})")
         if max_val is not None and num > float(max_val):
