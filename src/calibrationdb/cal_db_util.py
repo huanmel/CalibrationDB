@@ -570,7 +570,24 @@ class CalibrationDatabase:
 
         added = [csv_params[n] for n in csv_params if n not in db_params]
 
+        def _meta_differs(p, db_row):
+            """True if any metadata field in the CSV differs from the DB."""
+            def _f(v): return '' if v is None else str(v)
+            def _fn(v): return None if (v is None or v == '') else float(v)
+            return (
+                _f(p.datatype)    != _f(db_row.get('DataType'))    or
+                _f(p.unit)        != _f(db_row.get('Unit'))        or
+                _f(p.size)        != _f(db_row.get('Size'))        or
+                _fn(p.min_val)    != _fn(db_row.get('Min'))        or
+                _fn(p.max_val)    != _fn(db_row.get('Max'))        or
+                _f(p.description) != _f(db_row.get('Description')) or
+                _f(p.who)         != _f(db_row.get('Who'))         or
+                _f(p.users)       != _f(db_row.get('Users'))       or
+                _f(p.source)      != _f(db_row.get('Source'))
+            )
+
         changed = []
+        meta_only = []
         for name, p in csv_params.items():
             if name in db_params:
                 db_row = db_params[name]
@@ -585,6 +602,8 @@ class CalibrationDatabase:
                         'new_comment': p.comment,
                         'param': p,
                     })
+                elif _meta_differs(p, db_row):
+                    meta_only.append({'name': name, 'param': p})
 
         deleted = [
             {'name': n,
@@ -598,6 +617,7 @@ class CalibrationDatabase:
             'db_params': db_params,
             'added': added,
             'changed': changed,
+            'meta_only': meta_only,
             'deleted': deleted,
         }
 
@@ -663,14 +683,29 @@ class CalibrationDatabase:
                                  sync_comment=comment)
             cur.execute('''
                 UPDATE calibration
-                SET Value = ?, COMMENT = ?, ModifiedDateTime = ?,
-                    ModificationComment = ?, PreviousValues = ?,
+                SET Value = ?, COMMENT = ?, DataType = ?, Unit = ?, Size = ?,
+                    Min = ?, Max = ?, Description = ?,
+                    ModifiedDateTime = ?, ModificationComment = ?, PreviousValues = ?,
                     Who = ?, Users = ?, Source = ?
                 WHERE Name = ?
-            ''', (p.value, p.comment, datetime.now().isoformat(),
-                  comment, prev_values,
+            ''', (p.value, p.comment, p.datatype, p.unit, p.size,
+                  p.min_val, p.max_val, p.description,
+                  datetime.now().isoformat(), comment, prev_values,
                   p.who, p.users, p.source, name))
             applied_changed.append(name)
+
+        # Metadata-only changes (value/comment unchanged) — update silently
+        for m in diff.get('meta_only', []):
+            name, p = m['name'], m['param']
+            if only is not None and name not in only:
+                continue
+            cur.execute('''
+                UPDATE calibration
+                SET DataType = ?, Unit = ?, Size = ?, Min = ?, Max = ?,
+                    Description = ?, Who = ?, Users = ?, Source = ?
+                WHERE Name = ?
+            ''', (p.datatype, p.unit, p.size, p.min_val, p.max_val,
+                  p.description, p.who, p.users, p.source, name))
 
         for d in diff['deleted']:
             name = d['name']
