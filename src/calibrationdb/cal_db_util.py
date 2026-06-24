@@ -1045,7 +1045,7 @@ class CalibrationDatabase:
         """Return change history for a parameter, newest first."""
         cur = self.conn.cursor()
         cur.execute('''
-            SELECT ChangeType, OldValue, NewValue, OldComment, NewComment,
+            SELECT id, Name, ChangeType, OldValue, NewValue, OldComment, NewComment,
                    ChangeDateTime, SyncComment
             FROM calibration_history
             WHERE Name = ?

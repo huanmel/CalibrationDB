@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Bash(caldb -d /tmp/vtest.db add -n TestBool --datatype boolean -v 2)",
+      "Bash(caldb -d /tmp/vtest.db add -n TestU8 --datatype uint8 -v 300)",
+      "Bash(caldb -d /tmp/vtest.db add -n TestI8 --datatype int8 -v 200)",
+      "Bash(caldb -d /tmp/vtest.db add -n TestU8ok --datatype uint8 --min 0 --max 100 -v 50)",
+      "Bash(rm -f /tmp/vtest.db)",
+      "Bash(python -m calibrationdb.cal_db_cli changes --help)",
+      "Bash(python -m calibrationdb.cal_db_cli changes --by-tag -T -n 25)",
+      "Bash(python -m calibrationdb.cal_db_cli --db data/calibration.db changes --by-tag -T -n 25)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db changes --by-tag -T -n 25)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db changes)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db changes --by-tag)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db changes --by-tag -n 5)",
+      "Bash(python -m calibrationdb.cal_db_cli annotate --help)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db annotate -m \"sprint 5 baseline\" -s \"2026-06-08 14:10\" --dry-run)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db annotate -m \"cold weather tuning\" -s \"2026-06-08 14:10:56\" -u \"2026-06-08 14:10:57\" --dry-run)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db annotate --id 15 -m \"rate limiter\" --dry-run)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db annotate --id 15 -m \"rate limiter - sprint 5\")",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db log -n FanSpdRateLim)",
+      "Bash(python -c ' *)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db annotate -n 5)",
+      "Bash(python -m calibrationdb.cal_db_cli --db example/example.db annotate -m \"cold weather batch\" -s \"2026-06-08 14:10:56\" -u \"2026-06-08 14:10:57\" --dry-run)",
+      "Bash(python -m calibrationdb.cal_db_cli review --help)"
+    ]
+  }
+}

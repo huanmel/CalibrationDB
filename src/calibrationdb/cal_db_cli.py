@@ -929,9 +929,10 @@ def restore(ctx, name, at, comment, dry_run):
 
 @cli.command()
 @click.option('--name', '-n', required=True, help='Parameter name')
-@click.option('--limit', '-l', default=20, show_default=True, help='Max entries to show')
+@click.option('--limit', '-l', default=20, show_default=True, help='Max entries to show (0 = all)')
+@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
 @click.pass_context
-def log(ctx, name, limit):
+def log(ctx, name, limit, table):
     """Show change history for a parameter."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -941,7 +942,13 @@ def log(ctx, name, limit):
     if not entries:
         click.echo(f"No history found for '{name}'.")
         return
+
     click.echo(f"History for '{name}' ({len(entries)} entries):\n")
+
+    if table:
+        _print_changes_table(entries)
+        return
+
     for e in entries:
         ts = e['ChangeDateTime'][:19].replace('T', ' ')
         ctype = e['ChangeType'].upper()
@@ -955,6 +962,8 @@ def log(ctx, name, limit):
             click.echo(f"    value:   {e['NewValue']}")
         elif ctype == 'DELETE':
             click.echo(f"    value at deletion: {e['OldValue']}")
+        elif ctype == 'META':
+            click.echo(f"    meta:    {e['NewValue']}")
 
 
 @cli.command()
