@@ -284,8 +284,8 @@ def review(ctx, file, prefix):
 
     \b
     For every added, changed, or deleted parameter you can:
-      Enter          confirm with no comment
-      <any text>     confirm and attach that text as the change comment
+      Enter          confirm; uses the parameter's COMMENT column as sync comment
+      <any text>     confirm and use that text as the sync comment
       s              skip (do not apply this change)
       q              stop reviewing and apply everything confirmed so far
       a              abort -- apply nothing
@@ -316,15 +316,21 @@ def review(ctx, file, prefix):
     per_comments = {}
     aborted = False
 
-    def _prompt_change(idx, label, detail_lines):
+    def _prompt_change(idx, label, detail_lines, default_comment=''):
         """Show one change and return (action, comment).
         action: 'confirm' | 'skip' | 'quit' | 'abort'
+        Pressing Enter with no input keeps default_comment as the sync comment.
         """
         click.echo(f"--- [{idx}/{total}]  {label}")
         for line in detail_lines:
             click.echo(f"    {line}")
-        raw = click.prompt("    comment", default='', show_default=False,
-                           prompt_suffix=' > ')
+        if default_comment:
+            prompt_text = f"    sync comment [{default_comment}]"
+            raw = click.prompt(prompt_text, default=default_comment,
+                               show_default=False, prompt_suffix=' > ')
+        else:
+            raw = click.prompt("    sync comment", default='',
+                               show_default=False, prompt_suffix=' > ')
         raw = raw.strip()
         if raw.lower() == 'a':
             return 'abort', ''
@@ -340,21 +346,24 @@ def review(ctx, file, prefix):
     items = (
         [('ADD',    p.name,
           [f"value:    {_fmt(p.value)}",
-           f"comment:  {_fmt(p.comment)}"])
+           f"comment:  {_fmt(p.comment)}"],
+          p.comment or '')
          for p in added] +
         [('UPDATE', c['name'],
           [f"value:    {_fmt(c['old_value'])}  ->  {_fmt(c['new_value'])}"] +
           ([f"comment:  {_fmt(c['old_comment'])}  ->  {_fmt(c['new_comment'])}"]
-           if (c['old_comment'] or '') != (c['new_comment'] or '') else []))
+           if (c['old_comment'] or '') != (c['new_comment'] or '') else []),
+          c['new_comment'] or c['old_comment'] or '')
          for c in changed] +
         [('DELETE', d['name'],
           [f"value:    {_fmt(d['old_value'])}",
-           f"comment:  {_fmt(d['old_comment'])}"])
+           f"comment:  {_fmt(d['old_comment'])}"],
+          d['old_comment'] or '')
          for d in deleted]
     )
 
-    for idx, (ctype, name, details) in enumerate(items, 1):
-        action, cmt = _prompt_change(idx, f"{ctype:6s}  {name}", details)
+    for idx, (ctype, name, details, default_cmt) in enumerate(items, 1):
+        action, cmt = _prompt_change(idx, f"{ctype:6s}  {name}", details, default_cmt)
         if action == 'abort':
             aborted = True
             break
