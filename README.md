@@ -70,11 +70,15 @@ project/
   PROJECT_A_cal.db    ← created by caldb on first sync
 ```
 
-**First sync — import the whole file:**
+**First sync — creates the DB and imports everything:**
 ```bash
 cd project/
-caldb sync -c "initial import v0"
+caldb sync -f PROJECT_A_cal.csv -c "initial import v0"
+# Creating DB: PROJECT_A_cal.db
+# Sync: 42 added, 0 changed, 0 deleted (42 total)
 ```
+
+The `.db` is created automatically — no setup step needed.
 
 **After editing the CSV — record what changed:**
 ```bash
@@ -199,7 +203,8 @@ Useful in shell scripts: `caldb status || caldb sync`.
 ### `sync` — synchronise CSV and DB in either direction
 
 ```bash
-caldb sync                          # auto-detect pair, no comment
+caldb sync -f my_cal.csv -c "initial import"   # first use: creates the DB
+caldb sync                          # auto-detect pair (after first sync)
 caldb sync -c "sprint 5 tuning"     # attach a comment to all changes
 caldb sync -f path/to/file.csv      # explicit CSV (DB derived from name)
 caldb sync --dry-run                # show diff without writing
@@ -598,10 +603,13 @@ git commit -m "sprint 5 cold-weather tuning"
 |----------|-----------|-----------------------------------|----------------|
 | omitted  | omitted   | matched `.db`/`.csv` pair in cwd  | same base name |
 | `foo.db` | omitted   | `foo.db`                          | `foo.csv`      |
-| omitted  | `foo.csv` | `foo.db` (must exist)             | `foo.csv`      |
+| omitted  | `foo.csv` | `foo.db` (created if needed¹)     | `foo.csv`      |
 | `foo.db` | `bar.csv` | `foo.db`                          | `bar.csv`      |
 
 If multiple pairs exist in the directory, `--db` is required.
+
+¹ `sync` and `load` create the DB automatically when it doesn't exist yet.
+All other commands require an existing DB.
 
 ---
 

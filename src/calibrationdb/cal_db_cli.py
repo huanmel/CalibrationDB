@@ -67,13 +67,15 @@ def _resolve_db(db):
     raise click.UsageError("No .db file found. Provide --db <path>.")
 
 
-def _resolve_pair(db, csv_file):
+def _resolve_pair(db, csv_file, allow_new_db=False):
     """Resolve (db_path, csv_path), deriving each from the other when omitted.
 
     Priority:
       both given          -> use as-is
       only --db           -> csv = same base name + .csv
-      only --file         -> db  = same base name + .db  (must exist)
+      only --file         -> db  = same base name + .db
+                             (created automatically when allow_new_db=True,
+                              otherwise must already exist)
       neither given       -> scan cwd for a matched .db/.csv pair
     """
     if db and csv_file:
@@ -85,10 +87,14 @@ def _resolve_pair(db, csv_file):
     if csv_file:
         db_candidate = os.path.splitext(csv_file)[0] + '.db'
         if not os.path.exists(db_candidate):
-            raise click.UsageError(
-                f"No matching DB found at '{db_candidate}'. Provide --db."
-            )
-        click.echo(f"Using DB: {db_candidate}")
+            if allow_new_db:
+                click.echo(f"Creating DB: {db_candidate}")
+            else:
+                raise click.UsageError(
+                    f"No matching DB found at '{db_candidate}'. Provide --db."
+                )
+        else:
+            click.echo(f"Using DB: {db_candidate}")
         return db_candidate, csv_file
 
     # Neither given: look for a matched pair in cwd
@@ -402,7 +408,7 @@ def review(ctx, file, prefix):
 @click.pass_context
 def load(ctx, file, prefix, fmt):
     """Bulk-load parameters from a CSV or JSON file."""
-    db_path, file = _resolve_pair(ctx.obj['db'], file)
+    db_path, file = _resolve_pair(ctx.obj['db'], file, allow_new_db=True)
     if fmt is None:
         fmt = 'json' if file.lower().endswith('.json') else 'csv'
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -433,7 +439,7 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
       only DB changed   ->  DB  -> CSV  (same as --to-csv)
       both changed      ->  conflict warning, manual resolution required
     """
-    db_path, csv_path = _resolve_pair(ctx.obj['db'], file)
+    db_path, csv_path = _resolve_pair(ctx.obj['db'], file, allow_new_db=True)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
 
     # Auto-detect direction unless --to-csv was given explicitly
