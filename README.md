@@ -41,10 +41,11 @@ parameter individually — who changed what value, when, and why.
 - **Bidirectional sync** — `caldb sync --to-csv` writes CLI edits back to the CSV; direction is auto-detected
 - **Metadata sync tracking** — when only non-value fields change (Unit, Min/Max, DataType, …) they are counted and recorded separately
 - **Snapshot tags** — `caldb tag -n v1.2` marks a point in time; `caldb show --at v1.2` queries any parameter's value at that point; `--at DATETIME` back-dates a tag
+- **Flexible diff** — `caldb diff` compares CSV vs DB, two CSV files directly, or two tags/dates/sync comments; `-T` for a colorized table view
 - **Table output by default** — `caldb changes`, `caldb show`, `caldb search`, `caldb log` print an aligned table; pass `--detail`/`-v` for the old multi-line view
 - **Search** — `caldb search -D "timeout"` finds parameters by description, datatype, unit, or source
 - **Retroactive annotation** — `caldb annotate` lets you add or fix sync comments on past history entries
-- **No server, no dependencies** beyond `click` — single SQLite file alongside your CSV
+- **No server** — single SQLite file alongside your CSV; CLI built on `click`/`typer`, with `rich` for colorized table output
 
 ## Installation
 
@@ -262,19 +263,32 @@ If the CSV has uncommitted git changes a warning is shown before any write.
 
 ---
 
-### `diff` — show what differs between the CSV and the DB
+### `diff` — compare two snapshots of the calibration data
 
-Useful after `caldb status` reports a conflict (both sides changed since last
-sync). Shows the DB value and CSV value side by side for every parameter that
-differs, plus any parameters that exist only on one side.
+Default mode is useful after `caldb status` reports a conflict (both sides
+changed since last sync): shows the DB value and CSV value side by side for
+every parameter that differs, plus any parameters that exist only on one
+side, and any metadata-only changes (Unit, Min/Max, Description, Source, …
+changed but the value didn't). Two extended modes let you compare things
+other than "current CSV vs current DB":
 
 ```bash
-caldb diff                          # compare auto-detected pair
-caldb diff -f path/to/file.csv      # explicit CSV
-caldb diff -n 'FanSpd*'            # filter by name / glob
+caldb diff                                     # compare auto-detected CSV vs DB
+caldb diff -f path/to/file.csv                 # explicit CSV vs DB
+caldb diff -n 'FanSpd*'                        # filter by name / glob
+caldb diff -T                                  # colorized table view (one row per parameter)
+
+# Extended: two CSV files directly, no DB
+caldb diff -f baseline.csv -f current.csv
+
+# Extended: two point-in-time snapshots (tag name, date, or sync comment)
+caldb diff --from v1.0 --to v1.2               # between two tags
+caldb diff --from v1.0                         # a tag vs the current state
+caldb diff --from 2026-06-01 --to 2026-06-10   # between two dates
+caldb diff --from "sprint 4 tuning"            # a sync comment resolves like `changes --since`
 ```
 
-Output:
+Plain output:
 
 ```text
 VALUE DIFFERS  (2 parameter(s)):
@@ -286,13 +300,39 @@ VALUE DIFFERS  (2 parameter(s)):
     DB:   20
     CSV:  777
 
-Summary: 2 value conflicts, 0 CSV-only, 0 DB-only  (2 total differences)
+METADATA CHANGED  (1 parameter(s), value unchanged):
+
+  PmpSpdMin
+    Source: App/PmpCtl -> App/PmpCtl_v2
+
+Summary: 2 value conflicts, 1 metadata-only, 0 CSV-only, 0 DB-only  (3 total differences)
 ```
 
-To resolve a conflict shown by `diff`:
+Table output (`-T`), colorized by change type — the same `UPDATE`/`ADD`/
+`DELETE`/`META` vocabulary and colors as `caldb changes`:
+
+```text
+Type    Name           DB    CSV
+--------------------------------
+UPDATE  FanSpdReqMax   999   100
+UPDATE  FanSpdReqMin   20    777
+META    PmpSpdMin            Source: App/PmpCtl -> App/PmpCtl_v2
+```
+
+For `--from`/`--to`, metadata isn't reconstructed per snapshot the way Value
+is (DataType/Unit/Min/Max/Description/Source always reflect *today's*
+metadata, not the tag's) — metadata-only changes in that mode instead come
+from the `'meta'` history entries recorded in the time window between the
+two refs, so they still show up correctly even though the two reconstructed
+snapshots' metadata columns are identical.
+
+To resolve a conflict shown by the default `diff`:
 
 - `caldb sync` — accept CSV values (overwrites CLI edits in DB)
 - `caldb sync --to-csv` — accept DB values (overwrites CSV edits)
+
+Saving a diff to a file for later use (e.g. as an update source) isn't built
+yet — tracked as `diff --export` in [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -700,7 +740,7 @@ calibrationdb/
 
 ## Roadmap
 
-Remaining planned features — `restore`, `stats`, `diff`, `merge`, shell completions,
+Remaining planned features — `diff --export`, `merge`, `stats`, shell completions,
 and more — are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## License
