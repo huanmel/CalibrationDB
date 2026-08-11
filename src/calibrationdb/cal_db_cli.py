@@ -2,8 +2,35 @@ import glob
 import os
 import stat
 import subprocess
+from enum import Enum
+from typing import List, Optional
+
 import click
-from .cal_db_util import CalibrationDatabase, CalibrationParameter
+import typer
+from rich import box
+from rich.console import Console
+from rich.table import Table
+
+from .cal_db_util import CalibrationDatabase, CalibrationParameter, _format_meta_diff, _load_csv_params
+
+# Fixed (large) width so rich never shrinks/crops columns to fit the detected
+# terminal size -- matches the old manual table printers, which always printed
+# full-width rows and let the terminal itself wrap/scroll long lines.
+_console = Console(width=300)
+
+
+class ChangeType(str, Enum):
+    ADD = 'add'
+    UPDATE = 'update'
+    DELETE = 'delete'
+    RESTORE = 'restore'
+    META = 'meta'
+
+
+class FileFormat(str, Enum):
+    CSV = 'csv'
+    JSON = 'json'
+
 
 _HOOK_MARKER_START = '# >>> caldb pre-commit hook'
 _HOOK_MARKER_END   = '# <<< caldb pre-commit hook'
@@ -63,8 +90,8 @@ def _resolve_db(db):
         return candidates[0]
     if len(candidates) > 1:
         names = ', '.join(candidates)
-        raise click.UsageError(f"Multiple DB files found ({names}). Specify --db.")
-    raise click.UsageError("No .db file found. Provide --db <path>.")
+        raise typer.BadParameter(f"Multiple DB files found ({names}). Specify --db.")
+    raise typer.BadParameter("No .db file found. Provide --db <path>.")
 
 
 def _resolve_pair(db, csv_file, allow_new_db=False):
@@ -90,7 +117,7 @@ def _resolve_pair(db, csv_file, allow_new_db=False):
             if allow_new_db:
                 click.echo(f"Creating DB: {db_candidate}")
             else:
-                raise click.UsageError(
+                raise typer.BadParameter(
                     f"No matching DB found at '{db_candidate}'. Provide --db."
                 )
         else:
@@ -109,15 +136,15 @@ def _resolve_pair(db, csv_file, allow_new_db=False):
         return pairs[0]
     if len(pairs) > 1:
         names = ', '.join(os.path.basename(p[0]) for p in pairs)
-        raise click.UsageError(f"Multiple DB/CSV pairs found ({names}). Specify --db.")
+        raise typer.BadParameter(f"Multiple DB/CSV pairs found ({names}). Specify --db.")
     # No matched pairs -- fall back to any single .db
     if len(db_files) == 1:
         click.echo(f"Using DB: {db_files[0]}")
         return db_files[0], os.path.splitext(db_files[0])[0] + '.csv'
     if db_files:
         names = ', '.join(db_files)
-        raise click.UsageError(f"Multiple DB files found ({names}). Specify --db.")
-    raise click.UsageError("No .db file found. Provide --db <path>.")
+        raise typer.BadParameter(f"Multiple DB files found ({names}). Specify --db.")
+    raise typer.BadParameter("No .db file found. Provide --db <path>.")
 
 
 def _warn_if_unsynced(db_path):
@@ -201,32 +228,39 @@ def _print_sync_report(added, changed, deleted, meta_updated=None, dry_run=False
             click.echo(f"  * {n}")
 
 
-@click.group()
-@click.option('--db', '-d', default=None, help='Database file path')
-@click.option('--test', is_flag=True, default=False, help='Dry-run: rollback all changes')
-@click.pass_context
-def cli(ctx, db, test):
-    ctx.ensure_object(dict)
-    ctx.obj['db'] = db
-    ctx.obj['test'] = test
+app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode='rich',
+    pretty_exceptions_enable=False,
+    add_completion=False,
+)
 
 
-@cli.command()
-@click.option('--name', '-n', required=True, help='Parameter name')
-@click.option('--value', '-v', default=None, help='Parameter value')
-@click.option('--comment', '-c', default=None, help='Comment')
-@click.option('--datatype', default=None, help='Data type (uint8, single, boolean, …)')
-@click.option('--unit', '-u', default=None, help='Unit')
-@click.option('--size', default=None, help='Array size')
-@click.option('--min', 'min_val', type=float, default=None, help='Minimum value')
-@click.option('--max', 'max_val', type=float, default=None, help='Maximum value')
-@click.option('--description', default=None, help='Description')
-@click.option('--aliases', default=None, help='Aliases (semicolon-separated)')
-@click.option('--prefix', '-p', default='CAL-', help='UID prefix', show_default=True)
-@click.option('--mod-comment', '-m', default=None, help='Modification comment')
-@click.pass_context
-def add(ctx, name, value, comment, datatype, unit, size, min_val, max_val,
-        description, aliases, prefix, mod_comment):
+@app.callback()
+def cli(
+    ctx: typer.Context,
+    db: Optional[str] = typer.Option(None, '--db', '-d', help='Database file path'),
+    test: bool = typer.Option(False, '--test', help='Dry-run: rollback all changes'),
+):
+    ctx.obj = {'db': db, 'test': test}
+
+
+@app.command()
+def add(
+    ctx: typer.Context,
+    name: str = typer.Option(..., '--name', '-n', help='Parameter name'),
+    value: Optional[str] = typer.Option(None, '--value', '-v', help='Parameter value'),
+    comment: Optional[str] = typer.Option(None, '--comment', '-c', help='Comment'),
+    datatype: Optional[str] = typer.Option(None, '--datatype', help='Data type (uint8, single, boolean, …)'),
+    unit: Optional[str] = typer.Option(None, '--unit', '-u', help='Unit'),
+    size: Optional[str] = typer.Option(None, '--size', help='Array size'),
+    min_val: Optional[float] = typer.Option(None, '--min', help='Minimum value'),
+    max_val: Optional[float] = typer.Option(None, '--max', help='Maximum value'),
+    description: Optional[str] = typer.Option(None, '--description', help='Description'),
+    aliases: Optional[str] = typer.Option(None, '--aliases', help='Aliases (semicolon-separated)'),
+    prefix: str = typer.Option('CAL-', '--prefix', '-p', help='UID prefix', show_default=True),
+    mod_comment: Optional[str] = typer.Option(None, '--mod-comment', '-m', help='Modification comment'),
+):
     """Add a new parameter."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -240,12 +274,13 @@ def add(ctx, name, value, comment, datatype, unit, size, min_val, max_val,
     db.close()
 
 
-@cli.command()
-@click.option('--name', '-n', required=True, help='Parameter name')
-@click.option('--value', '-v', default=None, help='New value')
-@click.option('--mod-comment', '-m', default=None, help='Modification comment')
-@click.pass_context
-def update(ctx, name, value, mod_comment):
+@app.command()
+def update(
+    ctx: typer.Context,
+    name: str = typer.Option(..., '--name', '-n', help='Parameter name'),
+    value: Optional[str] = typer.Option(None, '--value', '-v', help='New value'),
+    mod_comment: Optional[str] = typer.Option(None, '--mod-comment', '-m', help='Modification comment'),
+):
     """Update the value of an existing parameter."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -254,12 +289,13 @@ def update(ctx, name, value, mod_comment):
     db.close()
 
 
-@cli.command()
-@click.option('--identifier', '-i', required=True, help='MID, UID, or Name')
-@click.option('--new-name', required=True, help='New parameter name')
-@click.option('--mod-comment', '-m', default='', help='Modification comment')
-@click.pass_context
-def rename(ctx, identifier, new_name, mod_comment):
+@app.command()
+def rename(
+    ctx: typer.Context,
+    identifier: str = typer.Option(..., '--identifier', '-i', help='MID, UID, or Name'),
+    new_name: str = typer.Option(..., '--new-name', help='New parameter name'),
+    mod_comment: str = typer.Option('', '--mod-comment', '-m', help='Modification comment'),
+):
     """Rename a parameter (old name moves to aliases)."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -268,11 +304,12 @@ def rename(ctx, identifier, new_name, mod_comment):
     db.close()
 
 
-@cli.command()
-@click.option('--name', '-n', required=True, help='Parameter name')
-@click.option('--comment', '-c', default='', help='Reason for deletion')
-@click.pass_context
-def delete(ctx, name, comment):
+@app.command()
+def delete(
+    ctx: typer.Context,
+    name: str = typer.Option(..., '--name', '-n', help='Parameter name'),
+    comment: str = typer.Option('', '--comment', '-c', help='Reason for deletion'),
+):
     """Soft-delete a parameter (kept in history)."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -281,11 +318,12 @@ def delete(ctx, name, comment):
     db.close()
 
 
-@cli.command()
-@click.option('--file', '-f', default=None, help='CSV file to review')
-@click.option('--prefix', '-p', default='CAL-', show_default=True)
-@click.pass_context
-def review(ctx, file, prefix):
+@app.command()
+def review(
+    ctx: typer.Context,
+    file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV file to review'),
+    prefix: str = typer.Option('CAL-', '--prefix', '-p', show_default=True),
+):
     """Interactively review each change before it is written to the DB.
 
     \b
@@ -400,17 +438,19 @@ def review(ctx, file, prefix):
                        meta_updated=applied_meta)
 
 
-@cli.command()
-@click.option('--file', '-f', default=None, help='CSV or JSON file path')
-@click.option('--prefix', '-p', default='CAL-', show_default=True)
-@click.option('--type', 'fmt', type=click.Choice(['csv', 'json']), default=None,
-              help='File format (default: inferred from extension)')
-@click.pass_context
-def load(ctx, file, prefix, fmt):
+@app.command()
+def load(
+    ctx: typer.Context,
+    file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV or JSON file path'),
+    prefix: str = typer.Option('CAL-', '--prefix', '-p', show_default=True),
+    fmt: Optional[FileFormat] = typer.Option(
+        None, '--type', help='File format (default: inferred from extension)',
+    ),
+):
     """Bulk-load parameters from a CSV or JSON file."""
     db_path, file = _resolve_pair(ctx.obj['db'], file, allow_new_db=True)
     if fmt is None:
-        fmt = 'json' if file.lower().endswith('.json') else 'csv'
+        fmt = FileFormat.JSON if file.lower().endswith('.json') else FileFormat.CSV
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     if fmt == 'csv':
         db.load_from_csv(file, prefix)
@@ -419,15 +459,18 @@ def load(ctx, file, prefix, fmt):
     db.close()
 
 
-@cli.command()
-@click.option('--file', '-f', default=None, help='CSV file to sync from/to')
-@click.option('--prefix', '-p', default='CAL-', show_default=True)
-@click.option('--comment', '-c', default='', help='Comment stored with all changes (CSV->DB only)')
-@click.option('--dry-run', is_flag=True, help='Show what would change without writing')
-@click.option('--to-csv', 'to_csv', is_flag=True,
-              help='Write DB changes back to CSV instead of the default CSV->DB direction')
-@click.pass_context
-def sync(ctx, file, prefix, comment, dry_run, to_csv):
+@app.command()
+def sync(
+    ctx: typer.Context,
+    file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV file to sync from/to'),
+    prefix: str = typer.Option('CAL-', '--prefix', '-p', show_default=True),
+    comment: str = typer.Option('', '--comment', '-c', help='Comment stored with all changes (CSV->DB only)'),
+    dry_run: bool = typer.Option(False, '--dry-run', help='Show what would change without writing'),
+    to_csv: bool = typer.Option(
+        False, '--to-csv',
+        help='Write DB changes back to CSV instead of the default CSV->DB direction',
+    ),
+):
     """Sync DB with CSV.
 
     \b
@@ -570,10 +613,11 @@ def sync(ctx, file, prefix, comment, dry_run, to_csv):
     db.close()
 
 
-@cli.command()
-@click.option('--file', '-f', default=None, help='Output CSV file path')
-@click.pass_context
-def export(ctx, file):
+@app.command()
+def export(
+    ctx: typer.Context,
+    file: Optional[str] = typer.Option(None, '--file', '-f', help='Output CSV file path'),
+):
     """Export the database to CSV."""
     db_path, file = _resolve_pair(ctx.obj['db'], file)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -581,11 +625,13 @@ def export(ctx, file):
     db.close()
 
 
-@cli.command()
-@click.option('--name', '-n', default=None,
-              help='Parameter name or glob pattern. Omit to check all.')
-@click.pass_context
-def validate(ctx, name):
+@app.command()
+def validate(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(
+        None, '--name', '-n', help='Parameter name or glob pattern. Omit to check all.',
+    ),
+):
     """Check parameter values against their Min/Max/DataType/Size constraints."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -617,13 +663,6 @@ def _print_param_rows(rows, compact, table=False):
         _TVAL = 24
         _TDESC = 30
 
-        # Determine which optional columns have any data
-        has_type  = any(r.get('DataType') for r in rows)
-        has_unit  = any(r.get('Unit')     for r in rows)
-        has_range = any(r.get('Min') is not None or r.get('Max') is not None for r in rows)
-        has_desc  = any(r.get('Description') for r in rows)
-        has_cmt   = any(r.get('COMMENT')     for r in rows)
-
         def range_str(r):
             mn = r.get('Min')
             mx = r.get('Max')
@@ -641,31 +680,14 @@ def _print_param_rows(rows, compact, table=False):
             'cmt':   _trunc(r.get('COMMENT') or '', _TDESC),
         } for r in rows]
 
-        w_name  = max(max(len(r['name'])  for r in trows), 4)
-        w_value = max(max(len(r['value']) for r in trows), 5)
-        w_type  = max(max(len(r['type'])  for r in trows), 8)  if has_type  else 0
-        w_unit  = max(max(len(r['unit'])  for r in trows), 4)  if has_unit  else 0
-        w_range = max(max(len(r['range']) for r in trows), 5)  if has_range else 0
-        w_desc  = max(max(len(r['desc'])  for r in trows), 11) if has_desc  else 0
-        w_cmt   = max(max(len(r['cmt'])   for r in trows), 7)  if has_cmt   else 0
+        columns = [('name', 'Name'), ('value', 'Value')]
+        if any(r['type']  for r in trows): columns.append(('type',  'DataType'))
+        if any(r['unit']  for r in trows): columns.append(('unit',  'Unit'))
+        if any(r['range'] for r in trows): columns.append(('range', 'Range'))
+        if any(r['desc']  for r in trows): columns.append(('desc',  'Description'))
+        if any(r['cmt']   for r in trows): columns.append(('cmt',   'Comment'))
 
-        def make_row(name, value, typ, unit, rng, desc, cmt):
-            cols = [f"{name:<{w_name}}", f"{value:<{w_value}}"]
-            if has_type:  cols.append(f"{typ:<{w_type}}")
-            if has_unit:  cols.append(f"{unit:<{w_unit}}")
-            if has_range: cols.append(f"{rng:<{w_range}}")
-            if has_desc:  cols.append(f"{desc:<{w_desc}}")
-            if has_cmt:   cols.append(f"{cmt:<{w_cmt}}")
-            return '  '.join(cols)
-
-        hdr = make_row('Name', 'Value',
-                       'DataType', 'Unit', 'Range', 'Description', 'Comment')
-        click.echo(hdr)
-        click.echo('-' * len(hdr))
-        for r in trows:
-            click.echo(make_row(r['name'], r['value'],
-                                r['type'], r['unit'], r['range'],
-                                r['desc'], r['cmt']))
+        _print_table(columns, trows)
         return
 
     for r in rows:
@@ -689,15 +711,23 @@ def _print_param_rows(rows, compact, table=False):
         click.echo()
 
 
-@cli.command()
-@click.option('--name', '-n', default=None,
-              help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.')
-@click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
-@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
-@click.option('--at', default=None, metavar='TAG',
-              help='Show values as they were at a named tag (see: caldb tags)')
-@click.pass_context
-def show(ctx, name, compact, table, at):
+@app.command()
+def show(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(
+        None, '--name', '-n', help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.',
+    ),
+    compact: bool = typer.Option(False, '--compact', '-c', help='One line per parameter: Name=Value'),
+    table: bool = typer.Option(
+        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
+    ),
+    detail: bool = typer.Option(
+        False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
+    ),
+    at: Optional[str] = typer.Option(
+        None, '--at', metavar='TAG', help='Show values as they were at a named tag (see: caldb tags)',
+    ),
+):
     """Show current value and metadata for one or more parameters."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -724,24 +754,31 @@ def show(ctx, name, compact, table, at):
             click.echo(msg)
             return
 
-    _print_param_rows(rows, compact, table=table)
+    _print_param_rows(rows, compact, table=not detail)
 
 
-@cli.command()
-@click.option('--name', '-n', default=None,
-              help='Name glob pattern (e.g. "*derate*")')
-@click.option('--description', '-D', default=None,
-              help='Description contains or glob pattern')
-@click.option('--datatype', '-t', default=None,
-              help='DataType contains or glob (e.g. "uint8")')
-@click.option('--unit', '-u', default=None,
-              help='Unit contains or glob (e.g. "rpm")')
-@click.option('--source', '-s', default=None,
-              help='Source contains or glob (e.g. "App/Fan*")')
-@click.option('--compact', '-c', is_flag=True, help='One line per parameter: Name=Value')
-@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
-@click.pass_context
-def search(ctx, name, description, datatype, unit, source, compact, table):
+@app.command()
+def search(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(None, '--name', '-n', help='Name glob pattern (e.g. "*derate*")'),
+    description: Optional[str] = typer.Option(
+        None, '--description', '-D', help='Description contains or glob pattern',
+    ),
+    datatype: Optional[str] = typer.Option(
+        None, '--datatype', '-t', help='DataType contains or glob (e.g. "uint8")',
+    ),
+    unit: Optional[str] = typer.Option(None, '--unit', '-u', help='Unit contains or glob (e.g. "rpm")'),
+    source: Optional[str] = typer.Option(
+        None, '--source', '-s', help='Source contains or glob (e.g. "App/Fan*")',
+    ),
+    compact: bool = typer.Option(False, '--compact', '-c', help='One line per parameter: Name=Value'),
+    table: bool = typer.Option(
+        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
+    ),
+    detail: bool = typer.Option(
+        False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
+    ),
+):
     """Search parameters by description, datatype, unit, source, or name.
 
     \b
@@ -756,7 +793,7 @@ def search(ctx, name, description, datatype, unit, source, compact, table):
       caldb search -u "rpm" -T
     """
     if not any([name, description, datatype, unit, source]):
-        raise click.UsageError("Provide at least one filter (-n, -D, -t, -u, -s).")
+        raise typer.BadParameter("Provide at least one filter (-n, -D, -t, -u, -s).")
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -770,16 +807,18 @@ def search(ctx, name, description, datatype, unit, source, compact, table):
         click.echo("No parameters match the given filters.")
         return
 
-    _print_param_rows(rows, compact, table=table)
+    _print_param_rows(rows, compact, table=not detail)
 
 
-@cli.command()
-@click.option('--name', '-n', required=True, help='Tag name (e.g. v1.2, sprint-5)')
-@click.option('--message', '-m', default='', help='Short description of this snapshot')
-@click.option('--at', default=None, metavar='DATETIME',
-              help='Backdate tag to this point, e.g. "2026-06-08 14:06:47"')
-@click.pass_context
-def tag(ctx, name, message, at):
+@app.command()
+def tag(
+    ctx: typer.Context,
+    name: str = typer.Option(..., '--name', '-n', help='Tag name (e.g. v1.2, sprint-5)'),
+    message: str = typer.Option('', '--message', '-m', help='Short description of this snapshot'),
+    at: Optional[str] = typer.Option(
+        None, '--at', metavar='DATETIME', help='Backdate tag to this point, e.g. "2026-06-08 14:06:47"',
+    ),
+):
     """Create a named snapshot tag at the current point in history.
 
     Use --at to place the tag at a historical datetime (e.g. from 'caldb changes -c').
@@ -801,9 +840,8 @@ def tag(ctx, name, message, at):
     db.close()
 
 
-@cli.command()
-@click.pass_context
-def tags(ctx):
+@app.command()
+def tags(ctx: typer.Context):
     """List all snapshot tags."""
     db_path = _resolve_db(ctx.obj['db'])
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -821,16 +859,21 @@ def tags(ctx):
         click.echo(f"  {ts}  {t['name']}{cmt}")
 
 
-@cli.command()
-@click.option('--name', '-n', default=None,
-              help='Parameter name or glob pattern (omit to restore all parameters at --at tag)')
-@click.option('--at', default=None, metavar='TAG',
-              help='Restore to values as they were at this tag (see: caldb tags)')
-@click.option('--comment', '-c', default='',
-              help='Comment stored with each restore history entry')
-@click.option('--dry-run', is_flag=True, help='Show what would change without writing')
-@click.pass_context
-def restore(ctx, name, at, comment, dry_run):
+@app.command()
+def restore(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(
+        None, '--name', '-n',
+        help='Parameter name or glob pattern (omit to restore all parameters at --at tag)',
+    ),
+    at: Optional[str] = typer.Option(
+        None, '--at', metavar='TAG', help='Restore to values as they were at this tag (see: caldb tags)',
+    ),
+    comment: str = typer.Option(
+        '', '--comment', '-c', help='Comment stored with each restore history entry',
+    ),
+    dry_run: bool = typer.Option(False, '--dry-run', help='Show what would change without writing'),
+):
     """Revert parameter values to a previous state.
 
     \b
@@ -845,9 +888,9 @@ def restore(ctx, name, at, comment, dry_run):
     is fully traceable in 'caldb log' and 'caldb changes'.
     """
     if not at and not name:
-        raise click.UsageError("Provide --name (-n) and/or --at <tag>.")
+        raise typer.BadParameter("Provide --name (-n) and/or --at <tag>.")
     if not at and name and ('*' in name or '?' in name):
-        raise click.UsageError("Glob patterns require --at <tag>.")
+        raise typer.BadParameter("Glob patterns require --at <tag>.")
 
     db_path = _resolve_db(ctx.obj['db'])
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -942,12 +985,18 @@ def restore(ctx, name, at, comment, dry_run):
     db.close()
 
 
-@cli.command()
-@click.option('--name', '-n', required=True, help='Parameter name')
-@click.option('--limit', '-l', default=20, show_default=True, help='Max entries to show (0 = all)')
-@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
-@click.pass_context
-def log(ctx, name, limit, table):
+@app.command()
+def log(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help='Parameter name'),
+    limit: int = typer.Option(20, '--limit', '-l', show_default=True, help='Max entries to show (0 = all)'),
+    table: bool = typer.Option(
+        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
+    ),
+    detail: bool = typer.Option(
+        False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
+    ),
+):
     """Show change history for a parameter."""
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
@@ -960,7 +1009,7 @@ def log(ctx, name, limit, table):
 
     click.echo(f"History for '{name}' ({len(entries)} entries):\n")
 
-    if table:
+    if not detail:
         _print_changes_table(entries)
         return
 
@@ -981,10 +1030,11 @@ def log(ctx, name, limit, table):
             click.echo(f"    meta:    {e['NewValue']}")
 
 
-@cli.command()
-@click.option('--file', '-f', default=None, help='CSV file (auto-detected if omitted)')
-@click.pass_context
-def status(ctx, file):
+@app.command()
+def status(
+    ctx: typer.Context,
+    file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV file (auto-detected if omitted)'),
+):
     """Show sync status between DB and CSV.
 
     \b
@@ -1043,72 +1093,168 @@ def status(ctx, file):
     ctx.exit(exit_code)
 
 
-@cli.command()
-@click.option('--file', '-f', default=None, help='CSV file (auto-detected if omitted)')
-@click.option('--name', '-n', default=None,
-              help='Filter by name or glob pattern (e.g. "FanSpd*")')
-@click.pass_context
-def diff(ctx, file, name):
-    """Show what differs between the CSV and the DB.
+@app.command()
+def diff(
+    ctx: typer.Context,
+    file: List[str] = typer.Option(
+        [], '--file', '-f',
+        help='CSV file (auto-detected if omitted). Give -f twice to compare two CSVs directly, no DB.',
+    ),
+    from_ref: Optional[str] = typer.Option(
+        None, '--from', metavar='REF',
+        help='Baseline snapshot: tag name, date, or sync comment. Enables tag/date comparison mode.',
+    ),
+    to_ref: Optional[str] = typer.Option(
+        None, '--to', metavar='REF',
+        help='Snapshot to compare to (tag/date/sync comment). Default: current DB state. Requires --from.',
+    ),
+    name: Optional[str] = typer.Option(
+        None, '--name', '-n', help='Filter by name or glob pattern (e.g. "FanSpd*")',
+    ),
+    table: bool = typer.Option(False, '--table', '-T', help='Aligned table view (one row per parameter)'),
+):
+    """Show what differs between two snapshots of the calibration data.
 
     \b
+    Default (no --from/--to, at most one -f): current CSV vs current DB.
     Useful when 'caldb status' reports a conflict (both sides changed).
-    Displays the DB value and CSV value side by side for every parameter
-    that differs, plus parameters that exist only on one side.
 
     \b
-    To resolve a conflict after reviewing:
+    Extended modes:
+      caldb diff -f baseline.csv -f current.csv      -- two CSV files, no DB
+      caldb diff --from v1.0 --to v1.2               -- between two tags
+      caldb diff --from v1.0                         -- a tag vs current state
+      caldb diff --from 2026-06-01 --to 2026-06-10   -- between two dates
+    --from/--to also accept a sync comment (see 'caldb changes --since').
+
+    \b
+    To resolve a CSV/DB conflict after reviewing (default mode only):
       caldb sync           -- accept CSV values (overwrites CLI edits in DB)
       caldb sync --to-csv  -- accept DB values  (overwrites CSV edits)
     """
-    db_path, csv_path = _resolve_pair(ctx.obj['db'], file)
-    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    d = db.compute_diff(csv_path)
-    db.close()
+    if to_ref and not from_ref:
+        raise typer.BadParameter("--to requires --from.")
+    if len(file) > 2:
+        raise typer.BadParameter("At most two --file/-f values are allowed.")
+    if len(file) == 2 and from_ref:
+        raise typer.BadParameter("--from/--to cannot be combined with two --file values.")
 
-    changed  = d['changed']
-    csv_only = d['added']    # in CSV, not in DB
-    db_only  = d['deleted']  # in DB, not in CSV
+    if len(file) == 2:
+        # CSV-vs-CSV: no DB involved
+        old_label, new_label = os.path.basename(file[0]), os.path.basename(file[1])
+        d = CalibrationDatabase.compute_snapshot_diff(
+            _load_csv_params(file[0]), _load_csv_params(file[1])
+        )
+        changed = d['changed']
+        old_only = [{'name': p['name'], 'value': p['old_value']} for p in d['deleted']]
+        new_only = [{'name': p['name'], 'value': p['value']} for p in d['added']]
+        meta_only = [{'name': m['name'], 'detail': m['detail']} for m in d['meta_only']]
+    elif from_ref:
+        # Tag/date/sync-comment vs tag/date/sync-comment (or current state)
+        db_path = _resolve_db(ctx.obj['db'])
+        db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+        old_time, old_rows = db.get_parameters_at_ref(from_ref)
+        if old_rows is None:
+            db.close()
+            raise typer.BadParameter(
+                f"'{from_ref}' did not resolve to a tag, date, or sync comment. "
+                f"Use 'caldb tags' to list available tags."
+            )
+        if to_ref:
+            new_time, new_rows = db.get_parameters_at_ref(to_ref)
+            if new_rows is None:
+                db.close()
+                raise typer.BadParameter(
+                    f"'{to_ref}' did not resolve to a tag, date, or sync comment. "
+                    f"Use 'caldb tags' to list available tags."
+                )
+            new_params = {r['Name']: r for r in new_rows}
+            new_label = to_ref
+        else:
+            new_time = None  # through the present
+            new_params = db._get_all_active()
+            new_label = 'current state'
+        old_label = from_ref
+        old_params = {r['Name']: r for r in old_rows}
+        d = CalibrationDatabase.compute_snapshot_diff(old_params, new_params)
+        changed = d['changed']
+        old_only = [{'name': p['name'], 'value': p['old_value']} for p in d['deleted']]
+        new_only = [{'name': p['name'], 'value': p['value']} for p in d['added']]
 
-    # Apply name filter if given
+        # Metadata isn't reconstructed per-snapshot (see get_meta_changes_between),
+        # so detect metadata-only changes from the 'meta' history rows in the window
+        # instead of compute_snapshot_diff's (structurally blind, here) meta_only.
+        already_covered = {r['name'] for r in changed + old_only + new_only}
+        meta_only = [
+            m for m in db.get_meta_changes_between(old_time, new_time)
+            if m['name'] not in already_covered
+        ]
+        db.close()
+    else:
+        # Default: current CSV vs current DB
+        old_label, new_label = 'DB', 'CSV'
+        db_path, csv_path = _resolve_pair(ctx.obj['db'], file[0] if file else None)
+        db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
+        d = db.compute_diff(csv_path)
+        db.close()
+        changed = d['changed']
+        old_only = [{'name': p['name'], 'value': p['old_value']} for p in d['deleted']]
+        new_only = [{'name': p.name, 'value': p.value} for p in d['added']]
+        meta_only = [
+            {'name': m['name'], 'detail': _format_meta_diff(m['param'], m['db_row'])}
+            for m in d['meta_only']
+        ]
+
     if name:
         import fnmatch
         pat = name if ('*' in name or '?' in name) else f'*{name}*'
-        changed  = [c for c in changed  if fnmatch.fnmatch(c['name'],   pat)]
-        csv_only = [p for p in csv_only if fnmatch.fnmatch(p.name,      pat)]
-        db_only  = [d for d in db_only  if fnmatch.fnmatch(d['name'],   pat)]
+        changed   = [c for c in changed    if fnmatch.fnmatch(c['name'], pat)]
+        old_only  = [p for p in old_only   if fnmatch.fnmatch(p['name'], pat)]
+        new_only  = [p for p in new_only   if fnmatch.fnmatch(p['name'], pat)]
+        meta_only = [m for m in meta_only  if fnmatch.fnmatch(m['name'], pat)]
 
-    if not changed and not csv_only and not db_only:
-        click.echo("No differences -- CSV and DB are in sync.")
+    if not changed and not old_only and not new_only and not meta_only:
+        click.echo("No differences.")
         return
 
-    if changed:
-        click.echo(f"VALUE DIFFERS  ({len(changed)} parameter(s)):\n")
-        for c in changed:
-            click.echo(f"  {c['name']}")
-            click.echo(f"    DB:   {c['old_value']}")
-            click.echo(f"    CSV:  {c['new_value']}")
-            if (c['old_comment'] or '') != (c['new_comment'] or ''):
-                click.echo(f"    DB comment:   {c['old_comment']}")
-                click.echo(f"    CSV comment:  {c['new_comment']}")
+    if table:
+        _print_diff_table(changed, old_only, new_only, meta_only, old_label, new_label)
         click.echo()
+    else:
+        if changed:
+            click.echo(f"VALUE DIFFERS  ({len(changed)} parameter(s)):\n")
+            for c in changed:
+                click.echo(f"  {c['name']}")
+                click.echo(f"    {old_label}:   {c['old_value']}")
+                click.echo(f"    {new_label}:  {c['new_value']}")
+                if (c['old_comment'] or '') != (c['new_comment'] or ''):
+                    click.echo(f"    {old_label} comment:   {c['old_comment']}")
+                    click.echo(f"    {new_label} comment:  {c['new_comment']}")
+            click.echo()
 
-    if csv_only:
-        click.echo(f"CSV ONLY  ({len(csv_only)} parameter(s) -- not in DB):\n")
-        for p in csv_only:
-            click.echo(f"  + {p.name}  ({p.value})")
-        click.echo()
+        if meta_only:
+            click.echo(f"METADATA CHANGED  ({len(meta_only)} parameter(s), value unchanged):\n")
+            for m in meta_only:
+                click.echo(f"  {m['name']}")
+                click.echo(f"    {m['detail']}")
+            click.echo()
 
-    if db_only:
-        click.echo(f"DB ONLY  ({len(db_only)} parameter(s) -- not in CSV):\n")
-        for d in db_only:
-            click.echo(f"  + {d['name']}  ({d['old_value']})")
-        click.echo()
+        if old_only:
+            click.echo(f"{old_label} ONLY  ({len(old_only)} parameter(s) -- not in {new_label}):\n")
+            for p in old_only:
+                click.echo(f"  + {p['name']}  ({p['value']})")
+            click.echo()
 
-    total = len(changed) + len(csv_only) + len(db_only)
+        if new_only:
+            click.echo(f"{new_label} ONLY  ({len(new_only)} parameter(s) -- not in {old_label}):\n")
+            for p in new_only:
+                click.echo(f"  + {p['name']}  ({p['value']})")
+            click.echo()
+
+    total = len(changed) + len(old_only) + len(new_only) + len(meta_only)
     click.echo(
-        f"Summary: {len(changed)} value conflicts, "
-        f"{len(csv_only)} CSV-only, {len(db_only)} DB-only  "
+        f"Summary: {len(changed)} value conflicts, {len(meta_only)} metadata-only, "
+        f"{len(new_only)} {new_label}-only, {len(old_only)} {old_label}-only  "
         f"({total} total differences)"
     )
 
@@ -1131,8 +1277,62 @@ def _trunc(val, width=22):
     return s if len(s) <= width else s[:width - 1] + '~'
 
 
+def _print_table(columns, rows, row_style=None, indent=''):
+    """Render rows as a colorized table (rich).  Generic across commands.
+
+    columns:   [(key, header), ...] -- header text and the row dict key it reads
+    rows:      [dict, ...]
+    row_style: optional callable(row) -> rich style string (e.g. 'green'),
+               applied to the whole row; return None/'' for no styling
+    indent:    prefix string (e.g. '  ') to left-pad the whole table
+    """
+    t = Table(box=box.SIMPLE, header_style='bold', show_edge=False, pad_edge=False)
+    for _, header in columns:
+        t.add_column(header, no_wrap=True, overflow='crop')
+    for r in rows:
+        cells = [str(r.get(key, '') or '') for key, _ in columns]
+        t.add_row(*cells, style=(row_style(r) if row_style else None))
+
+    if indent:
+        with _console.capture() as capture:
+            _console.print(t)
+        for line in capture.get().splitlines():
+            click.echo(indent + line)
+    else:
+        _console.print(t)
+
+
+_CHANGE_ROW_COLORS = {'ADD': 'green', 'DELETE': 'red', 'UPDATE': 'yellow', 'RESTORE': 'cyan', 'META': 'magenta'}
+
+
+def _print_diff_table(changed, old_only, new_only, meta_only, old_label, new_label):
+    """Render a diff's changed/old_only/new_only/meta_only lists as one colorized
+    table, reusing the same Type vocabulary and colors as `caldb changes`."""
+    _MAX_VAL = 22
+    _MAX_DETAIL = 60
+
+    rows = []
+    for c in changed:
+        rows.append({
+            'type': 'UPDATE', 'name': c['name'],
+            'old': _trunc(c['old_value'], _MAX_VAL), 'new': _trunc(c['new_value'], _MAX_VAL),
+        })
+    for p in old_only:
+        rows.append({'type': 'DELETE', 'name': p['name'], 'old': _trunc(p['value'], _MAX_VAL), 'new': ''})
+    for p in new_only:
+        rows.append({'type': 'ADD', 'name': p['name'], 'old': '', 'new': _trunc(p['value'], _MAX_VAL)})
+    for m in meta_only:
+        rows.append({'type': 'META', 'name': m['name'], 'old': '', 'new': _trunc(m['detail'], _MAX_DETAIL)})
+
+    _print_table(
+        [('type', 'Type'), ('name', 'Name'), ('old', old_label), ('new', new_label)],
+        rows,
+        row_style=lambda r: _CHANGE_ROW_COLORS.get(r['type']),
+    )
+
+
 def _print_changes_table(entries, indent=''):
-    """Print entries as an aligned table."""
+    """Print entries as a colorized table."""
     _MAX_VAL = 22
 
     rows = []
@@ -1154,27 +1354,12 @@ def _print_changes_table(entries, indent=''):
             'sc':    e['SyncComment'] or '',
         })
 
-    w_name = max((len(r['name']) for r in rows), default=4)
-    w_old  = max((len(r['old'])  for r in rows), default=9)
-    w_new  = max((len(r['new'])  for r in rows), default=9)
-    w_name = max(w_name, 4)
-    w_old  = max(w_old,  9)
-    w_new  = max(w_new,  9)
-    has_sc = any(r['sc'] for r in rows)
+    columns = [('ts', 'DateTime'), ('type', 'Type'), ('name', 'Name'),
+               ('old', 'Old Value'), ('new', 'New Value')]
+    if any(r['sc'] for r in rows):
+        columns.append(('sc', 'Comment'))
 
-    hdr = (f"{'DateTime':<19}  {'Type':<7}  {'Name':<{w_name}}  "
-           f"{'Old Value':<{w_old}}  {'New Value':<{w_new}}")
-    if has_sc:
-        hdr += '  Comment'
-    click.echo(indent + hdr)
-    click.echo(indent + '-' * len(hdr))
-
-    for r in rows:
-        line = (f"{r['ts']:<19}  {r['type']:<7}  {r['name']:<{w_name}}  "
-                f"{r['old']:<{w_old}}  {r['new']:<{w_new}}")
-        if has_sc:
-            line += f"  {r['sc']}"
-        click.echo(indent + line)
+    _print_table(columns, rows, row_style=lambda r: _CHANGE_ROW_COLORS.get(r['type']), indent=indent)
 
 
 def _emit_tags_between(tags_desc, after_dt, until_dt):
@@ -1199,21 +1384,31 @@ def _emit_tags_between(tags_desc, after_dt, until_dt):
         click.secho(f"  (tag: {t['name']}{suffix})", fg='cyan')
 
 
-@cli.command()
-@click.option('-n', '--count', default=None, type=int,
-              help='Number of entries to show (0 = all; default: 10, or all with --by-tag)')
-@click.option('--type', '-t', 'change_type',
-              type=click.Choice(['add', 'update', 'delete', 'restore', 'meta'], case_sensitive=False),
-              default=None, help='Filter by change type')
-@click.option('--since', '-s', default=None,
-              help='Show changes on or after a date (2026-06-01) or sync comment')
-@click.option('--compact', '-c', is_flag=True, help='One line per change')
-@click.option('--table', '-T', 'table', is_flag=True, help='Aligned table view')
-@click.option('--no-tags', 'no_tags', is_flag=True, help='Hide tag markers')
-@click.option('--by-tag', 'by_tag', is_flag=True,
-              help='Group changes between tag milestones (implies -n 0)')
-@click.pass_context
-def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
+@app.command()
+def changes(
+    ctx: typer.Context,
+    count: Optional[int] = typer.Option(
+        None, '-n', '--count',
+        help='Number of entries to show (0 = all; default: 10, or all with --by-tag)',
+    ),
+    change_type: Optional[ChangeType] = typer.Option(
+        None, '--type', '-t', help='Filter by change type', case_sensitive=False,
+    ),
+    since: Optional[str] = typer.Option(
+        None, '--since', '-s', help='Show changes on or after a date (2026-06-01) or sync comment',
+    ),
+    compact: bool = typer.Option(False, '--compact', '-c', help='One line per change'),
+    table: bool = typer.Option(
+        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
+    ),
+    detail: bool = typer.Option(
+        False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
+    ),
+    no_tags: bool = typer.Option(False, '--no-tags', help='Hide tag markers'),
+    by_tag: bool = typer.Option(
+        False, '--by-tag', help='Group changes between tag milestones (implies -n 0)',
+    ),
+):
     """Show recent changes across all parameters.
 
     Tags are shown as markers interleaved with changes (like git log --oneline).
@@ -1298,7 +1493,7 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
             if not section_entries:
                 continue
             click.secho(header, fg='cyan')
-            if table:
+            if not detail:
                 _print_changes_table(section_entries, indent='  ')
             else:
                 for e in section_entries:
@@ -1310,8 +1505,8 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
     # Standard interleaved view
     # ------------------------------------------------------------------
 
-    # --table: one aligned table, no interleaved tag markers
-    if table:
+    # Table is the default view; --detail falls through to the compact/detailed logic below.
+    if not detail:
         _print_changes_table(entries)
         return
 
@@ -1329,7 +1524,7 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
         return
 
     label = f"last {effective_count}" if effective_count else "all"
-    type_label = f" [{change_type}]" if change_type else ""
+    type_label = f" [{change_type.value}]" if change_type else ""
     click.echo(f"{len(entries)} change(s){type_label} ({label}):\n")
 
     for i, e in enumerate(entries):
@@ -1351,23 +1546,30 @@ def changes(ctx, count, change_type, since, compact, table, no_tags, by_tag):
         _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
 
 
-@cli.command()
-@click.option('--message', '-m', default=None,
-              help='New sync comment (omit to enter interactive mode)')
-@click.option('--since', '-s', default=None,
-              help='Start of time window (ISO date/datetime, e.g. "2026-06-08 14:10")')
-@click.option('--until', '-u', default=None,
-              help='End of time window, exclusive. Omit to cover everything from --since onward.')
-@click.option('--id', 'entry_id', default=None, type=int,
-              help='Annotate a single history row by its id (see: caldb log)')
-@click.option('-n', '--count', default=20, show_default=True,
-              help='Interactive mode: max entries to step through')
-@click.option('--type', '-t', 'change_type',
-              type=click.Choice(['add', 'update', 'delete', 'restore', 'meta'], case_sensitive=False),
-              default=None, help='Interactive mode: filter by change type')
-@click.option('--dry-run', is_flag=True, help='Bulk mode: preview matching rows without writing')
-@click.pass_context
-def annotate(ctx, message, since, until, entry_id, count, change_type, dry_run):
+@app.command()
+def annotate(
+    ctx: typer.Context,
+    message: Optional[str] = typer.Option(
+        None, '--message', '-m', help='New sync comment (omit to enter interactive mode)',
+    ),
+    since: Optional[str] = typer.Option(
+        None, '--since', '-s', help='Start of time window (ISO date/datetime, e.g. "2026-06-08 14:10")',
+    ),
+    until: Optional[str] = typer.Option(
+        None, '--until', '-u',
+        help='End of time window, exclusive. Omit to cover everything from --since onward.',
+    ),
+    entry_id: Optional[int] = typer.Option(
+        None, '--id', help='Annotate a single history row by its id (see: caldb log)',
+    ),
+    count: int = typer.Option(
+        20, '-n', '--count', show_default=True, help='Interactive mode: max entries to step through',
+    ),
+    change_type: Optional[ChangeType] = typer.Option(
+        None, '--type', '-t', help='Interactive mode: filter by change type', case_sensitive=False,
+    ),
+    dry_run: bool = typer.Option(False, '--dry-run', help='Bulk mode: preview matching rows without writing'),
+):
     """Retroactively set or update the sync comment on history entries.
 
     Without --message, opens an interactive session where you step through
@@ -1472,7 +1674,7 @@ def annotate(ctx, message, since, until, entry_id, count, change_type, dry_run):
     # Bulk mode (--message provided)
     # ------------------------------------------------------------------
     if entry_id is None and since is None:
-        raise click.UsageError(
+        raise typer.BadParameter(
             "Provide --since (for a time window) or --id (for one row), "
             "or omit --message to use interactive mode."
         )
@@ -1518,7 +1720,7 @@ def annotate(ctx, message, since, until, entry_id, count, change_type, dry_run):
         click.echo(f"Updated {n} history row(s) -> \"{message}\"")
 
 
-@cli.command('install-hook')
+@app.command('install-hook')
 def install_hook():
     """Install a git pre-commit hook that auto-syncs DB files for staged CSVs."""
     # Walk up from cwd to find .git directory
@@ -1529,7 +1731,7 @@ def install_hook():
             break
         parent = os.path.dirname(path)
         if parent == path:
-            raise click.UsageError("Not inside a git repository.")
+            raise typer.BadParameter("Not inside a git repository.")
         path = parent
 
     hooks_dir = os.path.join(git_dir, 'hooks')
@@ -1554,7 +1756,16 @@ def install_hook():
 
 
 def main():
-    cli()
+    # click.confirm()/click.prompt() (used in review/sync/annotate/restore) raise the
+    # real click.exceptions.Abort on interrupt. typer (this version) vendors its own
+    # internal copy of click and only recognizes exceptions from that copy, so a real
+    # click.Abort would otherwise propagate as a raw traceback instead of the usual
+    # "Aborted!" message -- caught here to match click's own behavior.
+    try:
+        app()
+    except click.exceptions.Abort:
+        click.echo('Aborted!', err=True)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

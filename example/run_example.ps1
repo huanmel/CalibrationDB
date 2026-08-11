@@ -17,7 +17,7 @@ Write-Host "`n=== 1. Initial sync from CSV ===" -ForegroundColor Cyan
 caldb -d $db sync -f $csv -c "initial import"
 
 Write-Host "`n=== 2. History for a single parameter ===" -ForegroundColor Cyan
-caldb -d $db log -n TempCtlSetPnt
+caldb -d $db log TempCtlSetPnt
 
 Write-Host "`n=== 3. Simulate editing the CSV (create a modified copy) ===" -ForegroundColor Cyan
 # Bump TempCtlSetPnt from 22.5 -> 24.0 and FanSpdReqMax from 100 -> 90
@@ -31,7 +31,7 @@ Write-Host "`n=== 4. Sync the modified CSV — should detect 2 changed ===" -For
 caldb -d $db sync -f $csv2 -c "cold weather tuning"
 
 Write-Host "`n=== 5. Full history for TempCtlSetPnt ===" -ForegroundColor Cyan
-caldb -d $db log -n TempCtlSetPnt
+caldb -d $db log TempCtlSetPnt
 
 Write-Host "`n=== 6. Add a new parameter via CLI ===" -ForegroundColor Cyan
 caldb -d $db add -n FanSpdRateLim -v 10 --datatype uint8 --unit "per/s" --size 1 `
@@ -41,7 +41,7 @@ Write-Host "`n=== 7. Update a parameter via CLI ===" -ForegroundColor Cyan
 caldb -d $db update -n PmpSpdMin -v 600 -m "raised idle speed to avoid stall"
 
 Write-Host "`n=== 8. Log for PmpSpdMin ===" -ForegroundColor Cyan
-caldb -d $db log -n PmpSpdMin
+caldb -d $db log PmpSpdMin
 
 Write-Host "`n=== 9. Soft-delete a parameter ===" -ForegroundColor Cyan
 caldb -d $db delete -n FaultRecovTout -c "merged into FaultTout"

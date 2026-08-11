@@ -5,7 +5,7 @@
 | Command                    | Purpose                                                                     |
 |----------------------------|-----------------------------------------------------------------------------|
 | `sync`                     | CSV -> DB or DB -> CSV (auto-detected); interactive confirm                 |
-| `diff`                     | Show what differs between CSV and DB (current state)                        |
+| `diff`                     | Compare CSV vs DB, two CSVs, two tags/dates, or a tag vs current state      |
 | `status`                   | Sync state + git status for both files; scriptable exit code                |
 | `review`                   | Interactive per-change confirmation with comments                           |
 | `show`                     | Current value + metadata; `--at TAG`; `-T` table view                       |
@@ -41,33 +41,28 @@ Priority areas:
 - Edge cases: multicol vs singlecol CSV, never-synced state, conflict detection,
   meta-only sync, annotate time-window matching
 
-### B. `diff` — extended comparison modes
-
-Currently `caldb diff` only compares the current CSV vs the current DB.
-Extend to support comparing any two snapshots:
-
-```bash
-# Between two tags (uses get_parameters_at_tag for each side)
-caldb diff --from v1.0 --to v1.2
-
-# Between a tag and current state
-caldb diff --from v1.0
-
-# Between two dates
-caldb diff --from 2026-06-01 --to 2026-06-10
-
-# Between two CSV files (no DB needed)
-caldb diff -f baseline.csv -f current.csv
-```
-
-Implementation: `--from` / `--to` resolve to a timestamp (from tag name, ISO date,
-or sync comment). `get_parameters_at_tag` already reconstructs state at any
-timestamp so the tag/date cases are cheap to add. File-vs-file is independent
-(load both CSVs, diff in memory).
-
 ---
 
 ## Backlog
+
+### `diff --export` — write diff results to CSV files
+
+`caldb diff` (all comparison modes: CSV-vs-DB, CSV-vs-CSV, tag/date-vs-tag/date)
+gains an `--export`/`-o` option that writes the diff to disk instead of (or in
+addition to) printing it, e.g.:
+
+```bash
+caldb diff -f baseline.csv -f current.csv --export out/
+#   out/current_upd1.csv   rows that changed, old (baseline) values
+#   out/current_upd2.csv   same rows, new (current) values
+#   out/current_new.csv    rows only in current
+#   out/current_del.csv    rows only in baseline
+```
+
+Ported from `compare_cal_files` in the external `cal_merge.py` script, which
+already implements this export shape for CSV-vs-CSV. Reuses
+`compute_snapshot_diff`'s `added`/`changed`/`deleted` output — just needs a
+CSV-writing step per diff mode.
 
 ### `uninstall-hook`
 
@@ -98,8 +93,16 @@ caldb --install-completion   # bash / zsh / fish
 
 ```bash
 caldb merge --from other.db          # preview what differs
+caldb merge --from other.csv         # source can be a bare CSV too, not just a .db
 caldb merge --from other.db --apply  # apply non-conflicting, prompt on conflicts
 ```
+
+Interactive per-row y/n/a(all) confirmation, modeled on `apply_cal_updates` in
+the external `cal_merge.py` script -- but writes through `CalibrationDatabase`
+(so applied changes go through normal history tracking, `sync_comment`, etc.)
+rather than editing the destination CSV directly. `--from` accepts either
+another `.db` or a bare CSV (parsed with `_load_csv_params`, no DB needed on
+the source side). Builds on `compute_snapshot_diff` for the preview.
 
 ### Multi-CSV tracking in one DB
 

@@ -106,21 +106,26 @@ def _validate_value(value, min_val=None, max_val=None, datatype=None, size=None)
     return issues
 
 
-def _format_meta_diff(p, db_row):
-    """Return a human-readable summary of which metadata fields changed."""
+_META_FIELDS = [
+    ('DataType', 'datatype'), ('Unit', 'unit'), ('Size', 'size'),
+    ('Min', 'min_val'), ('Max', 'max_val'), ('Description', 'description'),
+    ('Who', 'who'), ('Source', 'source'),
+]
+
+
+def _format_meta_diff(new_obj, old_obj):
+    """Return a human-readable summary of which metadata fields changed.
+
+    new_obj / old_obj: CalibrationParameter or DB row dict (either shape,
+    normalized internally) -- new_obj is the incoming/latest side.
+    """
+    b = _normalize_record(new_obj)
+    a = _normalize_record(old_obj)
     def _s(v): return '' if v is None else str(v)
-    checks = [
-        ('DataType',    _s(p.datatype),    _s(db_row.get('DataType'))),
-        ('Unit',        _s(p.unit),        _s(db_row.get('Unit'))),
-        ('Size',        _s(p.size),        _s(db_row.get('Size'))),
-        ('Min',         _s(p.min_val),     _s(db_row.get('Min'))),
-        ('Max',         _s(p.max_val),     _s(db_row.get('Max'))),
-        ('Description', _s(p.description), _s(db_row.get('Description'))),
-        ('Who',         _s(p.who),         _s(db_row.get('Who'))),
-        ('Source',      _s(p.source),      _s(db_row.get('Source'))),
-    ]
-    return ' | '.join(f"{lbl}: {old} -> {new}"
-                      for lbl, new, old in checks if new != old)
+    return ' | '.join(
+        f"{lbl}: {_s(a[key])} -> {_s(b[key])}"
+        for lbl, key in _META_FIELDS if _s(a[key]) != _s(b[key])
+    )
 
 
 def _parse_multicol_row(row):
@@ -169,6 +174,39 @@ def _parse_standard_row(row):
         users=None,
         source=None,
     )
+
+
+def _load_csv_params(csv_file):
+    """Parse a calibration CSV (either format) into {name: CalibrationParameter}."""
+    params = {}
+    with open(csv_file, 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        multicol_format = 'Value_1' in fieldnames
+        for row in reader:
+            parse = _parse_multicol_row if multicol_format else _parse_standard_row
+            p = parse(row)
+            if p.name:
+                params[p.name] = p
+    return params
+
+
+def _normalize_record(obj):
+    """Return a uniform dict view of a CalibrationParameter or a DB row dict."""
+    if isinstance(obj, CalibrationParameter):
+        return {
+            'value': obj.value, 'comment': obj.comment, 'datatype': obj.datatype,
+            'unit': obj.unit, 'size': obj.size, 'min_val': obj.min_val, 'max_val': obj.max_val,
+            'description': obj.description, 'who': obj.who, 'users': obj.users,
+            'source': obj.source,
+        }
+    return {
+        'value': obj.get('Value'), 'comment': obj.get('COMMENT'), 'datatype': obj.get('DataType'),
+        'unit': obj.get('Unit'), 'size': obj.get('Size'),
+        'min_val': obj.get('Min'), 'max_val': obj.get('Max'),
+        'description': obj.get('Description'), 'who': obj.get('Who'),
+        'users': obj.get('Users'), 'source': obj.get('Source'),
+    }
 
 
 class CalibrationDatabase:
@@ -602,17 +640,7 @@ class CalibrationDatabase:
                      'old_comment', 'new_comment', 'param'}, ...]
           deleted: [{'name', 'old_value', 'old_comment'}, ...]
         """
-        csv_params = {}
-        with open(csv_file, 'r', encoding='utf-8-sig') as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames or []
-            multicol_format = 'Value_1' in fieldnames
-            for row in reader:
-                parse = _parse_multicol_row if multicol_format else _parse_standard_row
-                p = parse(row)
-                if p.name:
-                    csv_params[p.name] = p
-
+        csv_params = _load_csv_params(csv_file)
         db_params = self._get_all_active()
 
         added = [csv_params[n] for n in csv_params if n not in db_params]
@@ -662,6 +690,71 @@ class CalibrationDatabase:
         return {
             'csv_params': csv_params,
             'db_params': db_params,
+            'added': added,
+            'changed': changed,
+            'meta_only': meta_only,
+            'deleted': deleted,
+        }
+
+    @staticmethod
+    def compute_snapshot_diff(old_params, new_params):
+        """Compute a diff between two arbitrary parameter snapshots.
+
+        old_params / new_params: {name: CalibrationParameter-or-row_dict}, e.g. from
+        _load_csv_params, _get_all_active, or get_parameters_at_ref.
+
+        Returns a dict with the same shape as compute_diff's added/changed/
+        meta_only/deleted (added/deleted entries are normalized dicts here,
+        not the original CalibrationParameter/row_dict).
+        """
+        def _meta_differs(a, b):
+            def _f(v): return '' if v is None else str(v)
+            def _fn(v): return None if (v is None or v == '') else float(v)
+            return (
+                _f(a['datatype'])    != _f(b['datatype'])    or
+                _f(a['unit'])        != _f(b['unit'])        or
+                _f(a['size'])        != _f(b['size'])        or
+                _fn(a['min_val'])    != _fn(b['min_val'])    or
+                _fn(a['max_val'])    != _fn(b['max_val'])    or
+                _f(a['description']) != _f(b['description']) or
+                _f(a['who'])         != _f(b['who'])         or
+                _f(a['users'])       != _f(b['users'])       or
+                _f(a['source'])      != _f(b['source'])
+            )
+
+        added = [
+            {'name': n, **_normalize_record(new_params[n])}
+            for n in new_params if n not in old_params
+        ]
+
+        changed = []
+        meta_only = []
+        for name, new_obj in new_params.items():
+            if name in old_params:
+                a = _normalize_record(old_params[name])
+                b = _normalize_record(new_obj)
+                v_changed = _normalise_value(b['value']) != _normalise_value(a['value'])
+                c_changed = (b['comment'] or '') != (a['comment'] or '')
+                if v_changed or c_changed:
+                    changed.append({
+                        'name': name,
+                        'old_value': a['value'],
+                        'new_value': b['value'],
+                        'old_comment': a['comment'],
+                        'new_comment': b['comment'],
+                    })
+                elif _meta_differs(a, b):
+                    meta_only.append({'name': name, 'detail': _format_meta_diff(new_obj, old_params[name])})
+
+        deleted = [
+            {'name': n, **_normalize_record(old_params[n])}
+            for n in old_params if n not in new_params
+        ]
+        for d in deleted:
+            d['old_value'] = d.pop('value')
+            d['old_comment'] = d.pop('comment')
+
+        return {
             'added': added,
             'changed': changed,
             'meta_only': meta_only,
@@ -855,41 +948,44 @@ class CalibrationDatabase:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    def get_parameters_at_tag(self, tag_name, pattern=None):
-        """Return (tag_datetime_str, [row_dict, ...]) for parameters at a tag.
+    def _parameters_as_of_time(self, timestamp, pattern=None):
+        """Return [row_dict, ...] for parameters as of a given ChangeDateTime.
 
-        Value and Comment are taken from history (what they were at that time).
+        Value and Comment are taken from the latest add/update/restore entry at
+        or before the timestamp -- 'meta' entries are skipped for this purpose
+        since their NewValue holds a human-readable field-diff summary, not an
+        actual parameter value (see _format_meta_diff / apply_changes).
         DataType, Unit, Size, Min, Max, Description, Source come from the
         current calibration table (these fields are not tracked in history).
-
-        Returns (None, None) if the tag does not exist.
-        Parameters that were deleted before the tag time are excluded.
+        Parameters whose latest entry (of any type) at or before the timestamp
+        is a delete are excluded.
         """
         cur = self.conn.cursor()
-        cur.execute(
-            "SELECT ChangeDateTime FROM _caldb_tags WHERE name = ?", (tag_name,)
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None, None
-        tag_time = row[0]
-
         cur.execute('''
-            SELECT h.Name,
-                   h.NewValue    AS Value,
-                   h.NewComment  AS COMMENT,
+            SELECT hv.Name, hv.Value, hv.COMMENT,
                    c.DataType, c.Unit, c.Size, c.Min, c.Max,
                    c.Description, c.Who, c.Source
-            FROM calibration_history h
-            LEFT JOIN calibration c ON c.Name = h.Name
-            WHERE h.id IN (
-                SELECT MAX(id) FROM calibration_history
-                WHERE ChangeDateTime <= ?
-                GROUP BY Name
+            FROM (
+                SELECT h.Name, h.NewValue AS Value, h.NewComment AS COMMENT
+                FROM calibration_history h
+                WHERE h.id IN (
+                    SELECT MAX(id) FROM calibration_history
+                    WHERE ChangeDateTime <= ? AND ChangeType IN ('add', 'update', 'restore')
+                    GROUP BY Name
+                )
+            ) hv
+            LEFT JOIN calibration c ON c.Name = hv.Name
+            WHERE hv.Name NOT IN (
+                SELECT Name FROM calibration_history
+                WHERE id IN (
+                    SELECT MAX(id) FROM calibration_history
+                    WHERE ChangeDateTime <= ?
+                    GROUP BY Name
+                )
+                AND ChangeType = 'delete'
             )
-            AND h.ChangeType != 'delete'
-            ORDER BY h.Name
-        ''', (tag_time,))
+            ORDER BY hv.Name
+        ''', (timestamp, timestamp))
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -899,7 +995,91 @@ class CalibrationDatabase:
             else:
                 rows = [r for r in rows if r['Name'] == pattern]
 
-        return tag_time, rows
+        return rows
+
+    def get_parameters_at_tag(self, tag_name, pattern=None):
+        """Return (tag_datetime_str, [row_dict, ...]) for parameters at a tag.
+
+        Returns (None, None) if the tag does not exist.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT ChangeDateTime FROM _caldb_tags WHERE name = ?", (tag_name,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None, None
+        tag_time = row[0]
+        return tag_time, self._parameters_as_of_time(tag_time, pattern=pattern)
+
+    def resolve_snapshot_ref(self, ref):
+        """Resolve a tag name / ISO date / sync comment to a ChangeDateTime.
+
+        Resolution order:
+          1. exact match against a tag name
+          2. looks like a date (`ref[:4]` digits and contains '-') -> used as-is
+          3. otherwise -> earliest ChangeDateTime with that SyncComment
+
+        Returns None if nothing resolves.
+        """
+        cur = self.conn.cursor()
+        cur.execute("SELECT ChangeDateTime FROM _caldb_tags WHERE name = ?", (ref,))
+        row = cur.fetchone()
+        if row is not None:
+            return row[0]
+
+        if ref[:4].isdigit() and '-' in ref:
+            return ref
+
+        cur.execute(
+            "SELECT MIN(ChangeDateTime) FROM calibration_history WHERE SyncComment = ?",
+            (ref,),
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_parameters_at_ref(self, ref, pattern=None):
+        """Like get_parameters_at_tag but ref may be a tag, date, or sync comment.
+
+        Returns (resolved_timestamp, [row_dict, ...]), or (None, None) if ref
+        does not resolve to anything.
+        """
+        timestamp = self.resolve_snapshot_ref(ref)
+        if timestamp is None:
+            return None, None
+        return timestamp, self._parameters_as_of_time(timestamp, pattern=pattern)
+
+    def get_meta_changes_between(self, since, until=None):
+        """Return the latest metadata-only change per Name in (since, until].
+
+        until=None means through the present. Metadata fields (DataType, Unit,
+        Min, Max, Description, Who, Source) aren't versioned in the calibration
+        table snapshot the way Value is (_parameters_as_of_time always reflects
+        the *current* metadata), so tag/date-vs-tag/date diff can't detect a
+        metadata change by comparing two reconstructed snapshots -- both sides
+        would show today's metadata. Instead this reads the 'meta' history rows
+        directly; each already carries a human-readable diff summary in
+        NewValue, written by apply_changes/_format_meta_diff at change time.
+
+        Returns [{'name', 'detail'}, ...].
+        """
+        cur = self.conn.cursor()
+        params = [since]
+        time_clause = 'ChangeDateTime > ?'
+        if until:
+            time_clause += ' AND ChangeDateTime <= ?'
+            params.append(until)
+        cur.execute(f'''
+            SELECT Name, NewValue FROM calibration_history
+            WHERE ChangeType = 'meta' AND {time_clause}
+            AND id IN (
+                SELECT MAX(id) FROM calibration_history
+                WHERE ChangeType = 'meta' AND {time_clause}
+                GROUP BY Name
+            )
+            ORDER BY Name
+        ''', params + params)
+        return [{'name': n, 'detail': v} for n, v in cur.fetchall()]
 
     def get_sync_status(self, csv_path):
         """Compare csv_path's current content against the stored hash.
