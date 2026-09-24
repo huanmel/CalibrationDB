@@ -233,6 +233,7 @@ app = typer.Typer(
     rich_markup_mode='rich',
     pretty_exceptions_enable=False,
     add_completion=False,
+    context_settings={'help_option_names': ['-h', '--help']},
 )
 
 
@@ -245,7 +246,7 @@ def cli(
     ctx.obj = {'db': db, 'test': test}
 
 
-@app.command()
+@app.command(rich_help_panel='Edit')
 def add(
     ctx: typer.Context,
     name: str = typer.Option(..., '--name', '-n', help='Parameter name'),
@@ -274,7 +275,7 @@ def add(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Edit')
 def update(
     ctx: typer.Context,
     name: str = typer.Option(..., '--name', '-n', help='Parameter name'),
@@ -289,7 +290,7 @@ def update(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Edit')
 def rename(
     ctx: typer.Context,
     identifier: str = typer.Option(..., '--identifier', '-i', help='MID, UID, or Name'),
@@ -304,7 +305,7 @@ def rename(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Edit')
 def delete(
     ctx: typer.Context,
     name: str = typer.Option(..., '--name', '-n', help='Parameter name'),
@@ -318,7 +319,7 @@ def delete(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Sync & Load')
 def review(
     ctx: typer.Context,
     file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV file to review'),
@@ -438,7 +439,7 @@ def review(
                        meta_updated=applied_meta)
 
 
-@app.command()
+@app.command(rich_help_panel='Sync & Load')
 def load(
     ctx: typer.Context,
     file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV or JSON file path'),
@@ -459,7 +460,7 @@ def load(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Sync & Load')
 def sync(
     ctx: typer.Context,
     file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV file to sync from/to'),
@@ -613,7 +614,7 @@ def sync(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Sync & Load')
 def export(
     ctx: typer.Context,
     file: Optional[str] = typer.Option(None, '--file', '-f', help='Output CSV file path'),
@@ -625,7 +626,7 @@ def export(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Inspect & Search')
 def validate(
     ctx: typer.Context,
     name: Optional[str] = typer.Option(
@@ -711,16 +712,23 @@ def _print_param_rows(rows, compact, table=False):
         click.echo()
 
 
-@app.command()
+@app.command(rich_help_panel='Inspect & Search')
 def show(
     ctx: typer.Context,
-    name: Optional[str] = typer.Option(
-        None, '--name', '-n', help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.',
+    name: Optional[str] = typer.Argument(
+        None, help='Parameter name or glob pattern (e.g. "FanSpd*"). Omit to show all.',
+    ),
+    description: Optional[str] = typer.Option(
+        None, '--description', '-D', help='Description contains or glob pattern',
+    ),
+    datatype: Optional[str] = typer.Option(
+        None, '--datatype', '-t', help='DataType contains or glob (e.g. "uint8")',
+    ),
+    unit: Optional[str] = typer.Option(None, '--unit', '-u', help='Unit contains or glob (e.g. "rpm")'),
+    source: Optional[str] = typer.Option(
+        None, '--source', '-s', help='Source contains or glob (e.g. "App/Fan*")',
     ),
     compact: bool = typer.Option(False, '--compact', '-c', help='One line per parameter: Name=Value'),
-    table: bool = typer.Option(
-        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
-    ),
     detail: bool = typer.Option(
         False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
     ),
@@ -728,7 +736,27 @@ def show(
         None, '--at', metavar='TAG', help='Show values as they were at a named tag (see: caldb tags)',
     ),
 ):
-    """Show current value and metadata for one or more parameters."""
+    """Show current value and metadata for one or more parameters.
+
+    \b
+    Omit NAME (and every filter) to show all parameters. NAME is exact-match
+    unless it contains * or ? (glob wildcard). -D/-t/-u/-s are substring
+    matches unless they contain a wildcard too; all given filters are AND-ed.
+
+    \b
+    Examples:
+      caldb show                     # everything
+      caldb show FanSpdReqMax        # exact name
+      caldb show "FanSpd*"           # glob
+      caldb show -D "derate"
+      caldb show -D "*temp*" -t uint8
+      caldb show -s "App/FanCtl"
+      caldb show -u "rpm" -c          # compact output
+      caldb show FanSpdReqMax --at v1.2   # value as of a tag
+    """
+    if at and (description or datatype or unit or source):
+        raise typer.BadParameter("--at can only be combined with NAME, not -D/-t/-u/-s.")
+
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
@@ -747,70 +775,22 @@ def show(
         ts = tag_time[:19].replace('T', ' ')
         click.echo(f"[at tag '{at}'  --  {ts}]\n")
     else:
-        rows = db.get_parameters(name)
+        rows = db.search_parameters(
+            name=name, description=description,
+            datatype=datatype, unit=unit, source=source,
+        )
         db.close()
         if not rows:
-            msg = f"No parameter found matching '{name}'." if name else "No parameters in DB."
+            msg = "No parameters match the given filters." if any(
+                [name, description, datatype, unit, source]
+            ) else "No parameters in DB."
             click.echo(msg)
             return
 
     _print_param_rows(rows, compact, table=not detail)
 
 
-@app.command()
-def search(
-    ctx: typer.Context,
-    name: Optional[str] = typer.Option(None, '--name', '-n', help='Name glob pattern (e.g. "*derate*")'),
-    description: Optional[str] = typer.Option(
-        None, '--description', '-D', help='Description contains or glob pattern',
-    ),
-    datatype: Optional[str] = typer.Option(
-        None, '--datatype', '-t', help='DataType contains or glob (e.g. "uint8")',
-    ),
-    unit: Optional[str] = typer.Option(None, '--unit', '-u', help='Unit contains or glob (e.g. "rpm")'),
-    source: Optional[str] = typer.Option(
-        None, '--source', '-s', help='Source contains or glob (e.g. "App/Fan*")',
-    ),
-    compact: bool = typer.Option(False, '--compact', '-c', help='One line per parameter: Name=Value'),
-    table: bool = typer.Option(
-        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
-    ),
-    detail: bool = typer.Option(
-        False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
-    ),
-):
-    """Search parameters by description, datatype, unit, source, or name.
-
-    \b
-    All filters are AND-ed. Plain strings match as substrings;
-    * and ? work as wildcards.
-
-    \b
-    Examples:
-      caldb search -D "derate"
-      caldb search -D "*temp*" -t uint8
-      caldb search -s "App/FanCtl"
-      caldb search -u "rpm" -T
-    """
-    if not any([name, description, datatype, unit, source]):
-        raise typer.BadParameter("Provide at least one filter (-n, -D, -t, -u, -s).")
-    db_path = _resolve_db(ctx.obj['db'])
-    _warn_if_unsynced(db_path)
-    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    rows = db.search_parameters(
-        name=name, description=description,
-        datatype=datatype, unit=unit, source=source,
-    )
-    db.close()
-
-    if not rows:
-        click.echo("No parameters match the given filters.")
-        return
-
-    _print_param_rows(rows, compact, table=not detail)
-
-
-@app.command()
+@app.command(rich_help_panel='Snapshots')
 def tag(
     ctx: typer.Context,
     name: str = typer.Option(..., '--name', '-n', help='Tag name (e.g. v1.2, sprint-5)'),
@@ -821,7 +801,7 @@ def tag(
 ):
     """Create a named snapshot tag at the current point in history.
 
-    Use --at to place the tag at a historical datetime (e.g. from 'caldb changes -c').
+    Use --at to place the tag at a historical datetime (e.g. from 'caldb log -c').
 
     \b
     Examples:
@@ -840,7 +820,7 @@ def tag(
     db.close()
 
 
-@app.command()
+@app.command(rich_help_panel='Snapshots')
 def tags(ctx: typer.Context):
     """List all snapshot tags."""
     db_path = _resolve_db(ctx.obj['db'])
@@ -859,7 +839,7 @@ def tags(ctx: typer.Context):
         click.echo(f"  {ts}  {t['name']}{cmt}")
 
 
-@app.command()
+@app.command(rich_help_panel='Edit')
 def restore(
     ctx: typer.Context,
     name: Optional[str] = typer.Option(
@@ -885,7 +865,7 @@ def restore(
       caldb restore --at v1.2 --dry-run        # preview without writing
 
     Each restore is recorded as a 'restore' history entry so the rollback
-    is fully traceable in 'caldb log' and 'caldb changes'.
+    is fully traceable in 'caldb log'.
     """
     if not at and not name:
         raise typer.BadParameter("Provide --name (-n) and/or --at <tag>.")
@@ -985,52 +965,7 @@ def restore(
     db.close()
 
 
-@app.command()
-def log(
-    ctx: typer.Context,
-    name: str = typer.Argument(..., help='Parameter name'),
-    limit: int = typer.Option(20, '--limit', '-l', show_default=True, help='Max entries to show (0 = all)'),
-    table: bool = typer.Option(
-        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
-    ),
-    detail: bool = typer.Option(
-        False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
-    ),
-):
-    """Show change history for a parameter."""
-    db_path = _resolve_db(ctx.obj['db'])
-    _warn_if_unsynced(db_path)
-    db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
-    entries = db.get_parameter_log(name, limit=limit)
-    db.close()
-    if not entries:
-        click.echo(f"No history found for '{name}'.")
-        return
-
-    click.echo(f"History for '{name}' ({len(entries)} entries):\n")
-
-    if not detail:
-        _print_changes_table(entries)
-        return
-
-    for e in entries:
-        ts = e['ChangeDateTime'][:19].replace('T', ' ')
-        ctype = e['ChangeType'].upper()
-        sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
-        click.echo(f"  {ts}  {ctype}{sc}")
-        if ctype in ('UPDATE', 'RESTORE'):
-            click.echo(f"    value:   {e['OldValue']}  ->  {e['NewValue']}")
-            if (e['OldComment'] or '') != (e['NewComment'] or ''):
-                click.echo(f"    comment: {e['OldComment']}  ->  {e['NewComment']}")
-        elif ctype == 'ADD':
-            click.echo(f"    value:   {e['NewValue']}")
-        elif ctype == 'DELETE':
-            click.echo(f"    value at deletion: {e['OldValue']}")
-        elif ctype == 'META':
-            click.echo(f"    meta:    {e['NewValue']}")
-
-
-@app.command()
+@app.command(rich_help_panel='Sync & Load')
 def status(
     ctx: typer.Context,
     file: Optional[str] = typer.Option(None, '--file', '-f', help='CSV file (auto-detected if omitted)'),
@@ -1093,7 +1028,7 @@ def status(
     ctx.exit(exit_code)
 
 
-@app.command()
+@app.command(rich_help_panel='Inspect & Search')
 def diff(
     ctx: typer.Context,
     file: List[str] = typer.Option(
@@ -1125,7 +1060,7 @@ def diff(
       caldb diff --from v1.0 --to v1.2               -- between two tags
       caldb diff --from v1.0                         -- a tag vs current state
       caldb diff --from 2026-06-01 --to 2026-06-10   -- between two dates
-    --from/--to also accept a sync comment (see 'caldb changes --since').
+    --from/--to also accept a sync comment (see 'caldb log --since').
 
     \b
     To resolve a CSV/DB conflict after reviewing (default mode only):
@@ -1307,7 +1242,7 @@ _CHANGE_ROW_COLORS = {'ADD': 'green', 'DELETE': 'red', 'UPDATE': 'yellow', 'REST
 
 def _print_diff_table(changed, old_only, new_only, meta_only, old_label, new_label):
     """Render a diff's changed/old_only/new_only/meta_only lists as one colorized
-    table, reusing the same Type vocabulary and colors as `caldb changes`."""
+    table, reusing the same Type vocabulary and colors as `caldb log`."""
     _MAX_VAL = 22
     _MAX_DETAIL = 60
 
@@ -1384,9 +1319,14 @@ def _emit_tags_between(tags_desc, after_dt, until_dt):
         click.secho(f"  (tag: {t['name']}{suffix})", fg='cyan')
 
 
-@app.command()
-def changes(
+@app.command(rich_help_panel='Inspect & Search')
+def log(
     ctx: typer.Context,
+    name: Optional[str] = typer.Argument(
+        None,
+        help='Parameter name or glob pattern (e.g. "FanSpd*"). '
+             'Omit for changes across all parameters.',
+    ),
     count: Optional[int] = typer.Option(
         None, '-n', '--count',
         help='Number of entries to show (0 = all; default: 10, or all with --by-tag)',
@@ -1398,9 +1338,6 @@ def changes(
         None, '--since', '-s', help='Show changes on or after a date (2026-06-01) or sync comment',
     ),
     compact: bool = typer.Option(False, '--compact', '-c', help='One line per change'),
-    table: bool = typer.Option(
-        False, '--table', '-T', help='Aligned table view (default; kept for backward compatibility)',
-    ),
     detail: bool = typer.Option(
         False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
     ),
@@ -1409,31 +1346,42 @@ def changes(
         False, '--by-tag', help='Group changes between tag milestones (implies -n 0)',
     ),
 ):
-    """Show recent changes across all parameters.
+    """Show change history -- for one parameter, or across all of them.
+
+    \b
+    Like 'git log [<path>] [options]':
+      no NAME     -- changes across all parameters
+      NAME given  -- history for just that parameter, or matching parameters
+                     if NAME contains a glob wildcard (* or ?)
 
     Tags are shown as markers interleaved with changes (like git log --oneline).
     Use --by-tag to group changes between tag milestones.
 
     \b
     Examples:
-      caldb changes              # last 10
-      caldb changes -n 25        # last 25
-      caldb changes -n 0         # all
-      caldb changes -t update    # only value changes
-      caldb changes -s 2026-06-01
-      caldb changes -s "sprint 4 tuning"
-      caldb changes -c           # compact, one line per change
-      caldb changes -T           # aligned table
-      caldb changes --by-tag     # grouped by tag milestones
-      caldb changes --by-tag -T  # table per tag section
+      caldb log                    # last 10, all parameters
+      caldb log FanSpdReqMax       # last 10 for one parameter
+      caldb log "FanSpd*"          # last 10 across matching parameters
+      caldb log FanSpdReqMax -n 0  # full history for one parameter
+      caldb log -n 25              # last 25, all parameters
+      caldb log -t update          # only value changes
+      caldb log -s 2026-06-01
+      caldb log -s "sprint 4 tuning"
+      caldb log -c                 # compact, one line per change
+      caldb log --by-tag           # grouped by tag milestones
+      caldb log --by-tag -v        # detailed compact-per-line grouping
     """
     db_path = _resolve_db(ctx.obj['db'])
     _warn_if_unsynced(db_path)
     db = CalibrationDatabase(db_path, test_mode=ctx.obj['test'])
     effective_count = count if count is not None else (0 if by_tag else 10)
-    entries = db.get_recent_changes(limit=effective_count, since=since)
+    entries = db.get_recent_changes(limit=effective_count, since=since, name=name)
     tags = db.list_tags()   # oldest first
     db.close()
+
+    if name and not entries:
+        click.echo(f"No history found for '{name}'.")
+        return
 
     if since and not entries:
         click.echo(f"No changes found matching --since '{since}'.")
@@ -1445,6 +1393,9 @@ def changes(
     if not entries:
         click.echo("No changes recorded yet.")
         return
+
+    if name:
+        click.echo(f"History for '{name}' ({len(entries)} entries):\n")
 
     # ------------------------------------------------------------------
     # --by-tag: group changes between consecutive tag boundaries
@@ -1523,9 +1474,10 @@ def changes(
             _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
         return
 
-    label = f"last {effective_count}" if effective_count else "all"
-    type_label = f" [{change_type.value}]" if change_type else ""
-    click.echo(f"{len(entries)} change(s){type_label} ({label}):\n")
+    if not name:
+        label = f"last {effective_count}" if effective_count else "all"
+        type_label = f" [{change_type.value}]" if change_type else ""
+        click.echo(f"{len(entries)} change(s){type_label} ({label}):\n")
 
     for i, e in enumerate(entries):
         ts = e['ChangeDateTime'][:19].replace('T', ' ')
@@ -1546,7 +1498,7 @@ def changes(
         _emit_tags_between(tags_desc, after_dt=e['ChangeDateTime'], until_dt=next_dt)
 
 
-@app.command()
+@app.command(rich_help_panel='Snapshots')
 def annotate(
     ctx: typer.Context,
     message: Optional[str] = typer.Option(
@@ -1720,7 +1672,7 @@ def annotate(
         click.echo(f"Updated {n} history row(s) -> \"{message}\"")
 
 
-@app.command('install-hook')
+@app.command('install-hook', rich_help_panel='Setup')
 def install_hook():
     """Install a git pre-commit hook that auto-syncs DB files for staged CSVs."""
     # Walk up from cwd to find .git directory

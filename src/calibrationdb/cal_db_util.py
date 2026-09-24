@@ -427,30 +427,39 @@ class CalibrationDatabase:
     def search_parameters(self, name=None, description=None,
                           datatype=None, unit=None, source=None):
         """Search active parameters across multiple fields (all filters are AND-ed).
+        Omit all filters to return every active parameter (sorted by Name).
 
-        Each filter is a glob pattern (* and ? supported) or a plain substring.
-        Returns a list of row dicts sorted by Name.
+        name is exact-match unless it contains a glob wildcard (* or ?), matching
+        get_parameters()'s semantics. The other fields are substring matches unless
+        they contain a wildcard, since fuzzy matching is what you want when you
+        don't know the exact Description/DataType/Unit/Source text.
         """
         cur = self.conn.cursor()
         clauses = ['(Deleted = 0 OR Deleted IS NULL)']
         args = []
 
-        def _add(col, val):
+        def _add_contains(col, val):
             if val is None:
                 return
             if '*' in val or '?' in val:
                 pat = val.replace('*', '%').replace('?', '_')
-                clauses.append(f'{col} LIKE ?')
             else:
                 pat = f'%{val}%'
-                clauses.append(f'{col} LIKE ?')
+            clauses.append(f'{col} LIKE ?')
             args.append(pat)
 
-        _add('Name',        name)
-        _add('Description', description)
-        _add('DataType',    datatype)
-        _add('Unit',        unit)
-        _add('Source',      source)
+        if name is not None:
+            if '*' in name or '?' in name:
+                clauses.append('Name LIKE ?')
+                args.append(name.replace('*', '%').replace('?', '_'))
+            else:
+                clauses.append('Name = ?')
+                args.append(name)
+
+        _add_contains('Description', description)
+        _add_contains('DataType',    datatype)
+        _add_contains('Unit',        unit)
+        _add_contains('Source',      source)
 
         sql = '''
             SELECT MID, UID, Name, Value, COMMENT, DataType, Unit, Size,
@@ -1235,12 +1244,14 @@ class CalibrationDatabase:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    def get_recent_changes(self, limit=10, since=None):
-        """Return recent changes across all parameters, newest first.
+    def get_recent_changes(self, limit=10, since=None, name=None):
+        """Return recent changes, newest first.
 
         limit  0 = all entries
         since  ISO date string  e.g. '2026-06-01'  -> ChangeDateTime >= that date
                sync comment str e.g. 'sprint 4'    -> on or after that sync session
+        name   exact parameter name, or glob pattern (* and ?) -> only matching
+               parameters (omit for changes across all parameters)
         """
         cur = self.conn.cursor()
         since_dt = None
@@ -1260,11 +1271,22 @@ class CalibrationDatabase:
                    ChangeDateTime, SyncComment
             FROM calibration_history
         '''
-        where = 'WHERE ChangeDateTime >= ? ' if since_dt else ''
+        conditions = []
+        args = []
+        if since_dt:
+            conditions.append('ChangeDateTime >= ?')
+            args.append(since_dt)
+        if name:
+            if '*' in name or '?' in name:
+                conditions.append('Name LIKE ?')
+                args.append(name.replace('*', '%').replace('?', '_'))
+            else:
+                conditions.append('Name = ?')
+                args.append(name)
+        where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
         order = 'ORDER BY id DESC'
         limit_clause = '' if limit == 0 else f'LIMIT {int(limit)}'
 
-        args = (since_dt,) if since_dt else ()
         cur.execute(f'{base} {where} {order} {limit_clause}', args)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]

@@ -8,10 +8,8 @@
 | `diff`                     | Compare CSV vs DB, two CSVs, two tags/dates, or a tag vs current state      |
 | `status`                   | Sync state + git status for both files; scriptable exit code                |
 | `review`                   | Interactive per-change confirmation with comments                           |
-| `show`                     | Current value + metadata; `--at TAG`; `-T` table view                       |
-| `search`                   | Filter params by description, datatype, unit, source; `-T` table view       |
-| `changes`                  | Recent history; `--since`; `-T` table; `--by-tag`; interleaved tag markers  |
-| `log`                      | Full history for one parameter                                              |
+| `show`                     | Current value + metadata by name/glob or by description/datatype/unit/source filter; `--at TAG`; table view by default |
+| `log`                      | History, all params or one (`git log`-style optional NAME, glob supported); `--since`; table view by default; `--by-tag`; interleaved tag markers |
 | `tag` / `tags`             | Named snapshot labels; `--at DATETIME` for back-dating                      |
 | `annotate`                 | Retroactively set/fix sync comments on history entries                      |
 | `restore`                  | Revert params to a tag or to the value before last change                   |
@@ -172,7 +170,7 @@ Design notes:
 Track several CSV files (e.g. per-subsystem) in a single `.db`:
 ```bash
 caldb sync -f subsys_a.csv -f subsys_b.csv
-caldb changes --file subsys_a.csv
+caldb log --file subsys_a.csv
 ```
 
 ### HTML / Markdown change report

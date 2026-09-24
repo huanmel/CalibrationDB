@@ -42,8 +42,8 @@ parameter individually — who changed what value, when, and why.
 - **Metadata sync tracking** — when only non-value fields change (Unit, Min/Max, DataType, …) they are counted and recorded separately
 - **Snapshot tags** — `caldb tag -n v1.2` marks a point in time; `caldb show --at v1.2` queries any parameter's value at that point; `--at DATETIME` back-dates a tag
 - **Flexible diff** — `caldb diff` compares CSV vs DB, two CSV files directly, or two tags/dates/sync comments; `-T` for a colorized table view
-- **Table output by default** — `caldb changes`, `caldb show`, `caldb search`, `caldb log` print an aligned table; pass `--detail`/`-v` for the old multi-line view
-- **Search** — `caldb search -D "timeout"` finds parameters by description, datatype, unit, or source
+- **Table output by default** — `caldb log`, `caldb show` print an aligned table; pass `--detail`/`-v` for the old multi-line view
+- **Search** — `caldb show -D "timeout"` finds parameters by description, datatype, unit, or source
 - **Retroactive annotation** — `caldb annotate` lets you add or fix sync comments on past history entries
 - **No server** — single SQLite file alongside your CSV; CLI built on `click`/`typer`, with `rich` for colorized table output
 
@@ -97,10 +97,10 @@ Both are stored in history. If you only ever use one, use the CSV `COMMENT` colu
 
 **See what changed across all parameters:**
 ```bash
-caldb changes          # last 10 changes
-caldb changes -n 25    # last 25
-caldb changes -n 0     # everything
-caldb changes -t update   # only value changes
+caldb log               # last 10 changes
+caldb log -n 25         # last 25
+caldb log -n 0          # everything
+caldb log -t update     # only value changes
 ```
 
 **See full history for one parameter:**
@@ -227,7 +227,7 @@ META UPDATED:
 
 When only non-value fields change (DataType, Unit, Min, Max, Description, …) they
 appear in a separate `META UPDATED` count and section.  These changes are also
-recorded in history with type `meta` and are visible in `caldb changes -t meta`.
+recorded in history with type `meta` and are visible in `caldb log -t meta`.
 
 **Bidirectional sync — writing DB changes back to the CSV:**
 
@@ -285,7 +285,7 @@ caldb diff -f baseline.csv -f current.csv
 caldb diff --from v1.0 --to v1.2               # between two tags
 caldb diff --from v1.0                         # a tag vs the current state
 caldb diff --from 2026-06-01 --to 2026-06-10   # between two dates
-caldb diff --from "sprint 4 tuning"            # a sync comment resolves like `changes --since`
+caldb diff --from "sprint 4 tuning"            # a sync comment resolves like `log --since`
 ```
 
 Plain output:
@@ -309,7 +309,7 @@ Summary: 2 value conflicts, 1 metadata-only, 0 CSV-only, 0 DB-only  (3 total dif
 ```
 
 Table output (`-T`), colorized by change type — the same `UPDATE`/`ADD`/
-`DELETE`/`META` vocabulary and colors as `caldb changes`:
+`DELETE`/`META` vocabulary and colors as `caldb log`:
 
 ```text
 Type    Name           DB    CSV
@@ -364,19 +364,35 @@ For each change:
 
 ---
 
-### `show` — current value and metadata
+### `show` — current value and metadata, by name or by search filter
 
 ```bash
 caldb show                        # all parameters (table)
-caldb show -n TempCtlSetPnt       # one parameter
-caldb show -n "FanSpd*"           # glob pattern
-caldb show -n "FanSpd*" -c        # compact: one line per parameter
+caldb show TempCtlSetPnt          # one parameter (exact name, positional)
+caldb show "FanSpd*"              # glob pattern
+caldb show "FanSpd*" -c           # compact: one line per parameter
 caldb show --detail                # old multi-line detailed view (short: -v)
 caldb show --at v1.2              # all parameters as they were at a tag
-caldb show -n TempCtlSetPnt --at v1.2   # single parameter at a tag
+caldb show TempCtlSetPnt --at v1.2   # single parameter at a tag
+
+caldb show -D "timeout"           # description contains "timeout" (table output)
+caldb show -D "*derate*"          # description glob
+caldb show -D "speed" -t uint8    # description AND datatype (AND-ed)
+caldb show -s "App/FanCtl"        # by source module
+caldb show -u "rpm" -c            # by unit, compact output
+caldb show "*Map*" -D "axis"      # name glob AND description
+caldb show -D "speed" --detail    # old multi-line detailed output
 ```
 
-Table is the default view (`-T` still works but is now redundant). Detailed output (`--detail`/`-v`):
+NAME is exact-match unless it contains `*`/`?` (glob). `-D`/`-t`/`-u`/`-s` are substring
+matches unless they contain a wildcard too; all given filters are AND-ed. `--at` can only
+be combined with NAME, not with `-D`/`-t`/`-u`/`-s`.
+
+Options: NAME (positional) · `-D` description · `-t` datatype · `-u` unit · `-s` source ·
+`-c` compact output · table output is the default ·
+`--detail`/`-v` for the old multi-line view · `--at TAG` for a point-in-time snapshot.
+
+Table is the default view. Detailed output (`--detail`/`-v`):
 
 ```text
 TempCtlSetPnt
@@ -399,25 +415,6 @@ FanSpdReqMin=20
 When `--at <tag>` is given, values and comments are reconstructed from history
 at the tag timestamp.  Metadata (type, range, description) always reflects the
 current state since those fields are not tracked per-change.
-
----
-
-### `search` — find parameters by metadata
-
-```bash
-caldb search -D "timeout"           # description contains "timeout" (table output)
-caldb search -D "*derate*"          # description glob
-caldb search -D "speed" -t uint8    # description AND datatype (AND-ed)
-caldb search -s "App/FanCtl"        # by source module
-caldb search -u "rpm" -c            # by unit, compact output
-caldb search -n "*Map*" -D "axis"   # name glob AND description
-caldb search -D "speed" --detail    # old multi-line detailed output
-```
-
-All filters are AND-ed.  Plain strings match as substrings; `*` and `?` work
-as wildcards.  Options: `-n` name · `-D` description · `-t` datatype ·
-`-u` unit · `-s` source · `-c` compact output · table output is the default
-(`-T` still accepted) · `--detail`/`-v` for the old multi-line view.
 
 ---
 
@@ -452,28 +449,45 @@ Output:
 
 ---
 
-### `changes` — recent changes across all parameters
+### `log` — change history, across all parameters or for one
+
+Modeled on `git log [<path>] [options]`: omit the parameter name for changes across everything,
+or pass one to see just that parameter's history. NAME is exact-match unless it contains a
+glob wildcard (`*` or `?`), matching the same convention as `caldb show`.
 
 ```bash
-caldb changes                        # last 10, table view (default)
-caldb changes -n 25                  # last 25
-caldb changes -n 0                   # all
-caldb changes -t update              # filter: [add|update|delete|restore|meta]
-caldb changes -s 2026-06-01          # on or after a date
-caldb changes -s "sprint 4 tuning"   # on or after the sync with that -c comment
-caldb changes -v -c                  # compact: one line per change (short for --detail)
-caldb changes -v                     # old multi-line detailed view, tags interleaved
-caldb changes --by-tag               # group changes between tag milestones (all entries)
-caldb changes --by-tag -n 25         # table view per section, capped at 25 entries per run
-caldb changes -v --no-tags           # hide interleaved tag markers (detailed view only)
+caldb log                            # last 10, all parameters, table view (default)
+caldb log TempCtlSetPnt              # last 10 entries for one parameter
+caldb log "FanSpd*"                  # last 10 across matching parameters
+caldb log TempCtlSetPnt -n 0         # full history for one parameter
+caldb log -n 25                      # last 25, all parameters
+caldb log -n 0                       # all
+caldb log -t update                  # filter: [add|update|delete|restore|meta]
+caldb log -s 2026-06-01              # on or after a date
+caldb log -s "sprint 4 tuning"       # on or after the sync with that -c comment
+caldb log -v -c                      # compact: one line per change (short for --detail)
+caldb log -v                         # old multi-line detailed view, tags interleaved
+caldb log --by-tag                   # group changes between tag milestones (all entries)
+caldb log --by-tag -n 25             # table view per section, capped at 25 entries per run
+caldb log -v --no-tags               # hide interleaved tag markers (detailed view only)
 ```
 
-Table output (default):
+Table output, all parameters (default):
 ```
 DateTime             Type     Name            Old Value  New Value  Comment
 ---------------------------------------------------------------------------
 2026-06-08 14:10:56  UPDATE   TempCtlSetPnt   22.5       24.0       sprint 5 tuning
 2026-06-08 14:10:56  UPDATE   FanSpdReqMax    100        90         sprint 5 tuning
+```
+
+Table output, one parameter (`caldb log TempCtlSetPnt`) — prints a header line first:
+```
+History for 'TempCtlSetPnt' (2 entries):
+
+DateTime             Type     Name           Old Value  New Value  Comment
+--------------------------------------------------------------------------
+2026-06-08 14:10:56  UPDATE   TempCtlSetPnt  22.5       24.0       sprint 5 tuning
+2026-06-08 14:10:55  ADD      TempCtlSetPnt             22.5       initial import v0
 ```
 
 Detailed output (`--detail`/`-v`; tags are interleaved as markers, like `git log --oneline`):
@@ -505,36 +519,8 @@ v1.0..v1.1  "sprint 5 baseline":
   2026-06-08 ...  ADD     FanSpdMapX  0 20 40 60 80 100  [initial import]
 ```
 
-`-n` limits apply per run; omit `-n` with `--by-tag` to see all entries grouped. `-T`/`--table`
-is still accepted but is now a no-op since table is the default; `-v` is short for `--detail`.
-
----
-
-### `log` — history for one parameter
-
-```bash
-caldb log TempCtlSetPnt           # last 20 entries, table view (default)
-caldb log TempCtlSetPnt -l 5      # last 5
-caldb log TempCtlSetPnt -v        # old multi-line detailed view (short for --detail)
-```
-
-The parameter name is positional — no `-n` flag needed. Table output (default):
-```
-DateTime             Type     Name           Old Value  New Value  Comment
---------------------------------------------------------------------------
-2026-06-08 14:10:56  UPDATE   TempCtlSetPnt  22.5       24.0       sprint 5 tuning
-2026-06-08 14:10:55  ADD      TempCtlSetPnt             22.5       initial import v0
-```
-
-Detailed output (`--detail`/`-v`):
-```
-History for 'TempCtlSetPnt' (2 entries):
-
-  2026-06-08 14:10:56  UPDATE  [sprint 5 tuning]
-    value:   22.5  ->  24.0
-  2026-06-08 14:10:55  ADD  [initial import v0]
-    value:   22.5
-```
+`-n` limits apply per run; omit `-n` with `--by-tag` to see all entries grouped. `-v` is
+short for `--detail`; table is always the default view otherwise.
 
 ---
 
