@@ -12,7 +12,22 @@ CalibrationParameter = namedtuple('CalibrationParameter', [
     'who', 'users', 'source'
 ], defaults=(None,) * 14)
 
-_VALUE_COLS = [f'Value_{i}' for i in range(1, 11)]
+def _value_cols(fieldnames):
+    """Value_1..Value_N columns of a multi-column CSV, in N order (N = longest vector)."""
+    return sorted((c for c in fieldnames if c and c.startswith('Value_') and c[6:].isdigit()),
+                  key=lambda c: int(c[6:]))
+
+
+def _split_to_value_cols(row, value_cols, canonical, name):
+    """Write a canonical space-separated value into the row's Value_N cells."""
+    parts = canonical.split()
+    if len(parts) > len(value_cols):
+        raise ValueError(f"{name}: {len(parts)} values but the CSV has only "
+                         f"Value_1..Value_{len(value_cols)}")
+    for col in value_cols:
+        row[col] = ''
+    for col, part in zip(value_cols, parts):
+        row[col] = part
 
 
 def _canonicalise_value(v):
@@ -129,8 +144,8 @@ def _format_meta_diff(new_obj, old_obj):
 
 
 def _parse_multicol_row(row):
-    """Parse a row from the multi-column CSV format (Value_1 .. Value_10)."""
-    parts = [row.get(c, '').strip() for c in _VALUE_COLS]
+    """Parse a row from the multi-column CSV format (Value_1 .. Value_N)."""
+    parts = [(row.get(c) or '').strip() for c in _value_cols(row)]
     value = ' '.join(p for p in parts if p) or None
     min_val = float(row['Min']) if row.get('Min', '').strip() else None
     max_val = float(row['Max']) if row.get('Max', '').strip() else None
@@ -1174,9 +1189,17 @@ class CalibrationDatabase:
         Rows in to_delete are left as-is (reported but not removed).
         Values are canonicalised on write.
         """
-        fieldnames     = diff['fieldnames']
+        fieldnames     = list(diff['fieldnames'])
         multicol       = diff['multicol']
         name_to_change = {ch['name']: ch for ch in diff['changed']}
+        if multicol:
+            # a vector longer than the CSV's Value_N columns adds columns after the last one
+            values = [ch['db_value'] for ch in diff['changed']] + [r.get('Value') for r in diff['to_add']]
+            n_need = max([len(_canonicalise_value(v or '').split()) for v in values], default=0)
+            value_cols = _value_cols(fieldnames)
+            if n_need > len(value_cols):
+                at = fieldnames.index(value_cols[-1]) + 1
+                fieldnames[at:at] = [f'Value_{i}' for i in range(len(value_cols) + 1, n_need + 1)]
 
         rows = []
         with open(csv_path, 'r', encoding='utf-8-sig') as f:
@@ -1191,10 +1214,7 @@ class CalibrationDatabase:
             ch = name_to_change[name]
             canonical = _canonicalise_value(ch['db_value'])
             if multicol:
-                for col in _VALUE_COLS:
-                    row[col] = ''
-                for i, part in enumerate(canonical.split()[:10]):
-                    row[f'Value_{i + 1}'] = part
+                _split_to_value_cols(row, _value_cols(fieldnames), canonical, name)
             else:
                 elems = canonical.split()
                 row['Value'] = ('[' + ' '.join(elems) + ']') if len(elems) > 1 else canonical
@@ -1206,8 +1226,7 @@ class CalibrationDatabase:
             new_row['Name'] = db_row['Name']
             canonical = _canonicalise_value(db_row.get('Value') or '')
             if multicol:
-                for i, part in enumerate(canonical.split()[:10]):
-                    new_row[f'Value_{i + 1}'] = part
+                _split_to_value_cols(new_row, _value_cols(fieldnames), canonical, db_row['Name'])
             else:
                 elems = canonical.split()
                 new_row['Value'] = ('[' + ' '.join(elems) + ']') if len(elems) > 1 else canonical
