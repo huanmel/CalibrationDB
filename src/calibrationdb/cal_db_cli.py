@@ -10,8 +10,11 @@ import typer
 from rich import box
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
-from .cal_db_util import CalibrationDatabase, CalibrationParameter, _format_meta_diff, _load_csv_params
+from .cal_db_util import (
+    CalibrationDatabase, CalibrationParameter, _canonicalise_value, _format_meta_diff, _load_csv_params,
+)
 
 # Fixed (large) width so rich never shrinks/crops columns to fit the detected
 # terminal size -- matches the old manual table printers, which always printed
@@ -1212,6 +1215,49 @@ def _trunc(val, width=22):
     return s if len(s) <= width else s[:width - 1] + '~'
 
 
+def _trunc_text(text, width=22):
+    """Like _trunc but for a rich Text, preserving any per-span styles."""
+    if len(text) <= width:
+        return text
+    out = text[:width - 1]
+    out.append('~')
+    return out
+
+
+def _highlight_diff_pair(old_val, new_val, max_width=22):
+    """Build (old, new) rich Text cells for an UPDATE/RESTORE value pair, with the
+    differing element(s) bold-highlighted (red=old, green=new -- standard diff colors).
+
+    Array values (matching element counts, >1 token) are compared element-by-element
+    using the same tokenization as value-comparison elsewhere (_canonicalise_value).
+    Scalars, or arrays whose element counts don't line up, fall back to highlighting
+    the whole value when it changed.
+    """
+    old_s = old_val if old_val is not None else ''
+    new_s = new_val if new_val is not None else ''
+    old_tokens = _canonicalise_value(old_s).split()
+    new_tokens = _canonicalise_value(new_s).split()
+
+    old_text, new_text = Text(), Text()
+    if len(old_tokens) == len(new_tokens) and len(old_tokens) > 1:
+        for i, (ot, nt) in enumerate(zip(old_tokens, new_tokens)):
+            if i:
+                old_text.append(' ')
+                new_text.append(' ')
+            if ot != nt:
+                old_text.append(ot, style='bold red')
+                new_text.append(nt, style='bold green')
+            else:
+                old_text.append(ot)
+                new_text.append(nt)
+    else:
+        changed = old_s != new_s
+        old_text.append(str(old_s), style='bold red' if changed else '')
+        new_text.append(str(new_s), style='bold green' if changed else '')
+
+    return _trunc_text(old_text, max_width), _trunc_text(new_text, max_width)
+
+
 def _print_table(columns, rows, row_style=None, indent=''):
     """Render rows as a colorized table (rich).  Generic across commands.
 
@@ -1225,7 +1271,7 @@ def _print_table(columns, rows, row_style=None, indent=''):
     for _, header in columns:
         t.add_column(header, no_wrap=True, overflow='crop')
     for r in rows:
-        cells = [str(r.get(key, '') or '') for key, _ in columns]
+        cells = [r.get(key, '') or '' for key, _ in columns]
         t.add_row(*cells, style=(row_style(r) if row_style else None))
 
     if indent:
@@ -1269,13 +1315,13 @@ def _print_diff_table(changed, old_only, new_only, meta_only, old_label, new_lab
 def _print_changes_table(entries, indent=''):
     """Print entries as a colorized table."""
     _MAX_VAL = 22
+    _MAX_SC = 30
 
     rows = []
     for e in entries:
         ctype = e['ChangeType'].upper()
         if ctype in ('UPDATE', 'RESTORE'):
-            old_v = _trunc(e['OldValue'], _MAX_VAL)
-            new_v = _trunc(e['NewValue'], _MAX_VAL)
+            old_v, new_v = _highlight_diff_pair(e['OldValue'], e['NewValue'], _MAX_VAL)
         elif ctype in ('ADD', 'META'):
             old_v, new_v = '', _trunc(e['NewValue'], _MAX_VAL)
         else:  # DELETE
@@ -1286,7 +1332,7 @@ def _print_changes_table(entries, indent=''):
             'name':  e['Name'],
             'old':   old_v,
             'new':   new_v,
-            'sc':    e['SyncComment'] or '',
+            'sc':    _trunc(e['SyncComment'] or '', _MAX_SC),
         })
 
     columns = [('ts', 'DateTime'), ('type', 'Type'), ('name', 'Name'),
