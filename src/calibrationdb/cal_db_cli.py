@@ -1202,7 +1202,8 @@ def _format_change_compact(e):
     ctype = e['ChangeType'].upper()
     sc    = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
     if ctype in ('UPDATE', 'RESTORE'):
-        detail = f"  {e['OldValue']} -> {e['NewValue']}"
+        old_disp, new_disp = _highlight_diff_pair_ansi(e['OldValue'], e['NewValue'])
+        detail = f"  {old_disp} -> {new_disp}"
     elif ctype in ('ADD', 'META'):
         detail = f"  {e['NewValue']}"
     else:
@@ -1212,50 +1213,70 @@ def _format_change_compact(e):
 
 def _trunc(val, width=22):
     s = str(val) if val is not None else ''
+    if width is None:
+        return s
     return s if len(s) <= width else s[:width - 1] + '~'
 
 
 def _trunc_text(text, width=22):
     """Like _trunc but for a rich Text, preserving any per-span styles."""
-    if len(text) <= width:
+    if width is None or len(text) <= width:
         return text
     out = text[:width - 1]
     out.append('~')
     return out
 
 
-def _highlight_diff_pair(old_val, new_val, max_width=22):
-    """Build (old, new) rich Text cells for an UPDATE/RESTORE value pair, with the
-    differing element(s) bold-highlighted (red=old, green=new -- standard diff colors).
+def _diff_token_pairs(old_val, new_val):
+    """Tokenize an UPDATE/RESTORE value pair into [(token, changed), ...] lists,
+    aligned so old_pairs[i]/new_pairs[i] are the same element.
 
     Array values (matching element counts, >1 token) are compared element-by-element
     using the same tokenization as value-comparison elsewhere (_canonicalise_value).
-    Scalars, or arrays whose element counts don't line up, fall back to highlighting
-    the whole value when it changed.
+    Scalars, or arrays whose element counts don't line up, fall back to treating the
+    whole value as a single token.
     """
     old_s = old_val if old_val is not None else ''
     new_s = new_val if new_val is not None else ''
     old_tokens = _canonicalise_value(old_s).split()
     new_tokens = _canonicalise_value(new_s).split()
 
-    old_text, new_text = Text(), Text()
     if len(old_tokens) == len(new_tokens) and len(old_tokens) > 1:
-        for i, (ot, nt) in enumerate(zip(old_tokens, new_tokens)):
-            if i:
-                old_text.append(' ')
-                new_text.append(' ')
-            if ot != nt:
-                old_text.append(ot, style='bold red')
-                new_text.append(nt, style='bold green')
-            else:
-                old_text.append(ot)
-                new_text.append(nt)
+        old_pairs = [(ot, ot != nt) for ot, nt in zip(old_tokens, new_tokens)]
+        new_pairs = [(nt, ot != nt) for ot, nt in zip(old_tokens, new_tokens)]
     else:
         changed = old_s != new_s
-        old_text.append(str(old_s), style='bold red' if changed else '')
-        new_text.append(str(new_s), style='bold green' if changed else '')
+        old_pairs = [(str(old_s), changed)]
+        new_pairs = [(str(new_s), changed)]
+    return old_pairs, new_pairs
 
+
+def _highlight_diff_pair(old_val, new_val, max_width=22):
+    """Build (old, new) rich Text cells for an UPDATE/RESTORE value pair, with the
+    differing element(s) bold-highlighted (red=old, green=new -- standard diff colors).
+    For the table view; see _highlight_diff_pair_ansi for the plain-text detail view.
+    """
+    old_pairs, new_pairs = _diff_token_pairs(old_val, new_val)
+    old_text, new_text = Text(), Text()
+    for i, (tok, changed) in enumerate(old_pairs):
+        if i:
+            old_text.append(' ')
+        old_text.append(tok, style='bold red' if changed else '')
+    for i, (tok, changed) in enumerate(new_pairs):
+        if i:
+            new_text.append(' ')
+        new_text.append(tok, style='bold green' if changed else '')
     return _trunc_text(old_text, max_width), _trunc_text(new_text, max_width)
+
+
+def _highlight_diff_pair_ansi(old_val, new_val):
+    """Like _highlight_diff_pair but returns plain ANSI-styled strings (via
+    click.style) for the --detail view, which prints with click.echo rather than
+    through a rich Table. Always full-length -- the detail view is never truncated."""
+    old_pairs, new_pairs = _diff_token_pairs(old_val, new_val)
+    old_str = ' '.join(click.style(t, fg='red', bold=True) if c else t for t, c in old_pairs)
+    new_str = ' '.join(click.style(t, fg='green', bold=True) if c else t for t, c in new_pairs)
+    return old_str, new_str
 
 
 def _print_table(columns, rows, row_style=None, indent=''):
@@ -1312,10 +1333,14 @@ def _print_diff_table(changed, old_only, new_only, meta_only, old_label, new_lab
     )
 
 
-def _print_changes_table(entries, indent=''):
-    """Print entries as a colorized table."""
-    _MAX_VAL = 22
-    _MAX_SC = 30
+def _print_changes_table(entries, indent='', full=False):
+    """Print entries as a colorized table.
+
+    full: skip the Old/New Value and Comment width caps -- rows may then wrap in
+          narrow terminals, but nothing is cut off.
+    """
+    _MAX_VAL = None if full else 22
+    _MAX_SC = None if full else 30
 
     rows = []
     for e in entries:
@@ -1387,6 +1412,10 @@ def log(
     detail: bool = typer.Option(
         False, '--detail', '-v', help='Show the old multi-line detailed view instead of the table',
     ),
+    full: bool = typer.Option(
+        False, '--full', help='Table view: do not truncate Old/New Value or Comment '
+                               '(rows may wrap in narrow terminals). No effect with --detail.',
+    ),
     no_tags: bool = typer.Option(False, '--no-tags', help='Hide tag markers'),
     by_tag: bool = typer.Option(
         False, '--by-tag', help='Group changes between tag milestones (implies -n 0)',
@@ -1414,6 +1443,7 @@ def log(
       caldb log -s 2026-06-01
       caldb log -s "sprint 4 tuning"
       caldb log -c                 # compact, one line per change
+      caldb log --full             # table view, untruncated Old/New Value and Comment
       caldb log --by-tag           # grouped by tag milestones
       caldb log --by-tag -v        # detailed compact-per-line grouping
     """
@@ -1491,7 +1521,7 @@ def log(
                 continue
             click.secho(header, fg='cyan')
             if not detail:
-                _print_changes_table(section_entries, indent='  ')
+                _print_changes_table(section_entries, indent='  ', full=full)
             else:
                 for e in section_entries:
                     click.echo(f"  {_format_change_compact(e)}")
@@ -1504,7 +1534,7 @@ def log(
 
     # Table is the default view; --detail falls through to the compact/detailed logic below.
     if not detail:
-        _print_changes_table(entries)
+        _print_changes_table(entries, full=full)
         return
 
     tags_desc = list(reversed(tags)) if not no_tags else []
@@ -1531,7 +1561,8 @@ def log(
         sc = f"  [{e['SyncComment']}]" if e['SyncComment'] else ''
         click.echo(f"  {ts}  {ctype:6s}  {e['Name']}{sc}")
         if ctype in ('UPDATE', 'RESTORE'):
-            click.echo(f"           value:   {e['OldValue']}  ->  {e['NewValue']}")
+            old_disp, new_disp = _highlight_diff_pair_ansi(e['OldValue'], e['NewValue'])
+            click.echo(f"           value:   {old_disp}  ->  {new_disp}")
             if (e['OldComment'] or '') != (e['NewComment'] or ''):
                 click.echo(f"           comment: {e['OldComment']}  ->  {e['NewComment']}")
         elif ctype == 'ADD':

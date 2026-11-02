@@ -4,7 +4,7 @@ title: print pretty log with colored diff
 status: Done
 assignee: []
 created_date: 2026-10-21 07:47
-updated_date: '2026-11-02T15:24:00Z'
+updated_date: '2026-11-02T16:10:00Z'
 labels: []
 dependencies: []
 ---
@@ -49,6 +49,10 @@ Verified against example/example.db (test mutations reverted afterward, git stat
 - AC2: added a parameter update with an 88-char comment; caldb log rendered it truncated to 30 chars with trailing '~', row stayed on one line (no terminal soft-wrap misalignment). Ran the task's exact repro command 'caldb log --by-tag -t update' and confirmed clean alignment.
 - AC3: caldb show and caldb diff -T (both go through the same _print_table whose cell-building was loosened from str(x) to passing values through) still render correctly -- spot-checked both.
 Scope: per discussion, this only touches _print_changes_table (caldb log). _print_diff_table (caldb diff -T) has the same Old/New Value column shape and could reuse _highlight_diff_pair later, but that's an explicit follow-up, not done here.
+
+Follow-up extension (same session, user-requested after Done): the colored element-diff highlighting now also applies to 'caldb log's --detail (-v) view, both the full multi-line form and the -v -c compact one-liner -- previously only the table view had it. Refactored the tokenization/comparison core out of _highlight_diff_pair into _diff_token_pairs(old, new) -> [(token, changed), ...], shared by two renderers: _highlight_diff_pair (rich Text, for the table) and the new _highlight_diff_pair_ansi (click.style-wrapped plain strings, for the click.echo-based detail/compact views).
+Also added --full to 'caldb log': skips the Old/New Value (22-char) and Comment (30-char) truncation in table view, for cases where the truncated vector/comment hides the information you need -- _trunc/_trunc_text now treat width=None as "no truncation". Detail view was already always untruncated, so --full has no effect there (documented in its help text).
+Verified: raw-ANSI-byte capture (same NO_COLOR-bypass method as before) confirmed _highlight_diff_pair_ansi emits the same red/green-on-the-differing-token-only behavior as the table version, for both an array value and a scalar. Regression: default (non---full) table truncation unchanged, existing pytest suite (tests/test_multicol_values.py) still passes, 'caldb show' unaffected.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
