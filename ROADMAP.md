@@ -29,7 +29,11 @@ tracking (`ChangeType='meta'`), type-inherent range validation.
 
 ### A. Python test suite
 
-Unit and integration tests using `pytest` + `click.testing.CliRunner`.
+Unit and integration tests using `pytest` + `click.testing.CliRunner`. A `tests/` directory now
+exists (`pip install -e ".[test]"`, then `pytest`) with regression coverage for calibration
+vectors longer than 10 values (`tests/test_multicol_values.py`, commit 92de356). Everything else
+below is still open.
+
 Priority areas:
 
 - `cal_db_util.py`: `_canonicalise_value`, `compute_diff`, `compute_db_to_csv_diff`,

@@ -12,7 +12,7 @@ parameter add/update/delete/meta-change with timestamps, old/new values, and com
 git tracks a file, `caldb` tracks a *parameter*.
 
 Read `README.md` for full CLI reference and output examples; `ROADMAP.md` for planned work
-(notably: no test suite exists yet — item A in the roadmap).
+(item A, the test suite, has started — see below — but most of its priority areas are still open).
 
 ## Commands
 
@@ -22,11 +22,17 @@ caldb --help                     # after install, entry point is `caldb` (see py
 python -m calibrationdb.cal_db_cli --help   # run without installing
 
 .\example\run_example.ps1        # scripted end-to-end walkthrough of the CLI (PowerShell)
+
+pip install -e ".[test]"         # install pytest for the tests/ suite
+pytest                           # run it
 ```
 
-There is no test suite, linter, or CI config in this repo currently. `caldb --test` (global flag)
-runs any single command against a real DB connection but rolls back the transaction at the end —
-useful for manually verifying a command's effect without persisting it.
+There is no linter or CI config in this repo currently. A `tests/` directory (pytest) exists with
+regression coverage for the multi-column CSV / long-vector behavior (`tests/test_multicol_values.py`);
+most of ROADMAP.md item A's other priority areas (CLI integration tests, tag/restore round-trips,
+etc.) are still untested. `caldb --test` (global flag) runs any single command against a real DB
+connection but rolls back the transaction at the end — useful for manually verifying a command's
+effect without persisting it.
 
 ## Architecture
 
